@@ -1,5 +1,6 @@
 ---
-lang: es
+%% PARA RENDERIZAR EL INFORME COPIAR EN LA TERMINAL: quarto render Informe.qmd --to typst %%
+lang: 
 format:
   html:
     toc: false
