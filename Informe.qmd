@@ -1,5 +1,4 @@
 ---
-%% PARA RENDERIZAR EL INFORME COPIAR EN LA TERMINAL: quarto render Informe.qmd --to typst %%
 lang: 
 format:
   html:
@@ -34,6 +33,7 @@ h2 { border-bottom: 0; }
   [Fecha de entrega]</p>
 </div>
 ```
+# PARA CORRER PONER ESTO EN LA TERMINAL: quarto render Informe.qmd --to typst
 
 ## Resumen ejecutivo
 
