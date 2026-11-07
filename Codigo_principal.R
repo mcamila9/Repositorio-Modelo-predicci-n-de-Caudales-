@@ -315,4 +315,5 @@ mejora_m3 <- 1 - mae_m3 / mae_pers_2012
 median(mejora_m3)
 sum(mejora_m3 > 0)
 #COMENTARIO DE PRUEBA1
+#aloaloa
 
