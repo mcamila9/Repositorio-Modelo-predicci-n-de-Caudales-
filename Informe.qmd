@@ -1,1 +1,40 @@
-informe
+## Diseño de evaluación
+
+[Incluye el diagrama temporal, las particiones de desarrollo y prueba,
+las métricas y la referencia de persistencia.]
+
+## Métodos
+
+[Describe el preprocesamiento, los tres procedimientos, sus
+hiperparámetros y el presupuesto de búsqueda.]
+
+## Resultados
+
+<!-- Para ejecutar el análisis al renderizar, descomenta la línea source()
+     y verifica que el nombre y las rutas del script coincidan con tu proyecto. -->
+
+```{r}
+# source("analisis_caudales.R")
+```
+
+[Separa los resultados de desarrollo y prueba. Incluye una tabla
+comparativa, incertidumbre, un diagnóstico gráfico y dos análisis de
+sensibilidad.]
+
+## Discusión
+
+[Explica qué decisión pueden apoyar los resultados y en qué
+situaciones la predicción tendría limitaciones.]
+
+## Reproducibilidad y contribuciones
+
+[Incluye el comando, la versión del repositorio, los datos de entrada,
+el tiempo de ejecución, las contribuciones y la declaración de uso de IA.]
+
+## Referencias
+
+[Agrega las fuentes citadas.]
+
+## Anexo técnico
+
+[Si corresponde, agrega material complementario.]
