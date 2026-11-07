@@ -1,3 +1,66 @@
+---
+lang: es
+format:
+  pdf:
+    documentclass: article
+    papersize: letter
+    fontsize: 10pt
+    geometry:
+      - left=30mm
+      - right=27mm
+      - top=21mm
+      - bottom=25mm
+    pdf-engine: pdflatex
+    toc: false
+    number-sections: false
+    keep-tex: true
+include-in-header:
+  text: |
+    \usepackage{lmodern}
+    \usepackage{graphicx}
+    \setlength{\parindent}{0pt}
+    \setlength{\parskip}{0.9em}
+execute:
+  echo: false
+---
+
+```{=latex}
+\thispagestyle{empty}
+\noindent
+\IfFileExists{logo-uc.png}{%
+  \begin{minipage}[c]{0.12\linewidth}
+    \includegraphics[width=\linewidth]{logo-uc.png}
+  \end{minipage}\hspace{0.02\linewidth}%
+}{}
+\begin{minipage}[c]{0.81\linewidth}
+  \small\textsc{Pontificia Universidad Católica de Chile}\\
+  \textsc{Facultad de Matemáticas}\\
+  \textsc{EYP3407 Tópicos Aplicados en Estadística}\\
+  \textsc{Profesor: Eloy Alvarado Narváez}\\
+  \textsc{Ayudante: Andrés Díaz}
+\end{minipage}
+
+\vspace{1.1cm}
+
+\begin{center}
+  {\large\bfseries Predicción del caudal del día siguiente\par}
+  \vspace{0.15em}
+  10 de noviembre de 2026\\
+  Camila Moreno, [Integrante 2], [Integrante 3], [Integrante 4]
+\end{center}
+```
+
+## Resumen ejecutivo
+
+[En hasta 250 palabras, presenta el problema, el resultado principal,
+la recomendación y la principal limitación.]
+
+## Problema y datos
+
+[Describe la unidad cuenca–día, la respuesta en m³/s, el horizonte de
+predicción y la procedencia de los datos CAMELS-CL. Agrega el diagrama y
+la tabla de construcción de la muestra y la tabla de variables admisibles
+y excluidas.]
 ## Diseño de evaluación
 
 [Incluye el diagrama temporal, las particiones de desarrollo y prueba,
