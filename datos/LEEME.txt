@@ -1,0 +1,50 @@
+EYP3407 - Caso 01: CAMELS-CL
+Copia de datos preparada el 12 de octubre de 2026.
+
+SUBCONJUNTO ENTREGADO
+Latitud de estación entre -40 y -33 grados. Las 30 cuencas con más días de caudal observado en 2000–2012; empate por identificador ascendente. Series completas del recorte 2000–2016, sin rellenar ausencias. Atributos transpuestos a una fila por cuenca. No utilizar índices hidrológicos ni resúmenes climáticos de toda la serie como información histórica; consultar disponibilidad de cada atributo.
+
+ARCHIVOS Y VARIABLES
+caudal_m3s.csv: caudal diario en m3/s.
+precipitacion_mm.csv: precipitación CR2MET en mm/día.
+temperatura_media_c.csv: temperatura media CR2MET en grados Celsius.
+En estas tres tablas, fecha identifica el día; las demás columnas identifican
+cuencas. Su orden puede variar entre archivos.
+atributos.csv: una fila por gauge_id, con atributos de la cuenca.
+diccionario_atributos.pdf: Tabla 3 del artículo original; describe los atributos,
+sus unidades y fuentes. El sufijo i representa el producto meteorológico.
+Los índices que resumen periodos completos no son información histórica
+disponible en cada fecha. Revisar su admisibilidad según la ficha del caso.
+Atribución: Alvarez-Garreton et al. (2018), CAMELS-CL, PANGAEA.894885,
+CC BY 4.0. Diccionario extraído de la Tabla 3 de su artículo en Hydrology and
+Earth System Sciences, 22, 5817–5846 (CC BY 4.0).
+
+LECTURA Y USO
+Los CSV utilizan UTF-8, coma separadora y punto decimal. Los nombres y códigos
+originales se conservan. Un valor ausente no equivale a cero.
+Descomprima este paquete en datos/ de su repositorio. Trabaje exclusivamente
+con estos archivos y con la población y respuesta de la ficha del ANEXO.
+Las transformaciones y el análisis deben programarse en el repositorio del equipo.
+No es necesario descargar de nuevo las fuentes ni ejecutar código de extracción.
+
+PROCEDENCIA
+La copia entregada es el punto de partida de la reproducción. Los portales
+pueden revisar sus datos después de la descarga. Cite al productor original,
+la edición o fecha de descarga y las referencias del ANEXO. Consulte las
+condiciones de reutilización de la fuente al publicar los datos.
+
+Fuentes utilizadas en la preparación:
+1_CAMELScl_attributes.zip
+https://store.pangaea.de/Publications/Alvarez-Garreton-etal_2018/1_CAMELScl_attributes.zip
+
+2_CAMELScl_streamflow_m3s.zip
+https://store.pangaea.de/Publications/Alvarez-Garreton-etal_2018/2_CAMELScl_streamflow_m3s.zip
+
+4_CAMELScl_precip_cr2met.zip
+https://store.pangaea.de/Publications/Alvarez-Garreton-etal_2018/4_CAMELScl_precip_cr2met.zip
+
+10_CAMELScl_tmean_cr2met.zip
+https://store.pangaea.de/Publications/Alvarez-Garreton-etal_2018/10_CAMELScl_tmean_cr2met.zip
+
+Definiciones de atributos y unidades
+https://hess.copernicus.org/articles/22/5817/2018/hess-22-5817-2018.pdf
