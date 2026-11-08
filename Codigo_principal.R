@@ -1,5 +1,11 @@
 # Proyecto Tópicos Aplicados - Caso 01: caudal del día siguiente (CAMELS-CL)
-#
+
+if (!file.exists("datos/caudal_m3s.csv")) {
+  stop("No se encuentra datos/caudal_m3s.csv. R está en: ", getwd(),
+       "\nAbre la carpeta del repositorio en VS Code/RStudio o ejecuta desde ella: ")
+       }else{cat("todo correcto para ejecutar las bases")}
+
+
 # Pregunta: ¿cuánto mejora un modelo estadístico la predicción del caudal de
 # mañana frente a decir "mañana igual que hoy" (persistencia)?
 #
@@ -453,7 +459,7 @@ formulas <- list(
   m6 = cambio_manana ~ cambio_hoy + log_Q + cuenca + cuenca:log_Q +
     log1p(P) + log1p(P_ayer) + log1p(lluvia_3d) + log1p(lluvia_7d) + log1p(lluvia_30d) +
     cuenca:log1p(P) + cuenca:log1p(P_ayer) + cuenca:log1p(lluvia_3d) +
-    Temp + temp_7d + mes + cuenca:temp_7d
+        Temp + temp_7d + mes + cuenca:temp_7d
 )
 
 # Para cada año de 2006 a 2012, arma el entrenamiento y la validación,
@@ -612,9 +618,7 @@ round(cbind(
 
 
 
-# BLOQUE 8. M1: REGRESIÓN PENALIZADA CON GLMNET (procedimiento M1 de las instrucciones) #
-# Objetivo: las instrucciones (sección 3.1) piden como primer procedimiento una
-# regresión lineal con ridge o lasso, eligiendo la penalización por validación.
+# BLOQUE 8. M1: REGRESIÓN PENALIZADA CON GLMNET #
 # Los modelos m1 a m6 (bloques 5 y 6) fueron la exploración: nos dijeron qué
 # estructura necesita el problema. Aquí le damos a glmnet TODAS las pistas
 # candidatas de m6 y dejamos que la penalización decida cuánto pesa cada una,
@@ -637,43 +641,49 @@ round(cbind(
 #     internas: los 3 años anteriores, cada uno también con origen creciente.
 #     Ej.: para validar 2010 se prueban las configuraciones validando en 2007, 2008 y 2009.
 #     El año externo NUNCA se usa para elegir: es una validación anidada.
-#   - Presupuesto: 2 alphas (ridge, lasso) x 10 lambdas = 20 configuraciones,
-#     el máximo sugerido por las instrucciones (sección 3.2).
-#   - Regla de selección: la misma de siempre, mediana entre ríos de la mejora en
+#   - 2 alphas (ridge, lasso) x 10 lambdas = 20 configuraciones
+#   - Regla de selección: mediana entre ríos de la mejora en
 #     MAE (m3/s) frente a persistencia, promediada en las 3 particiones internas.
 
 library(glmnet)   # regresión penalizada
 library(Matrix)   # matrices dispersas: casi todas las interacciones por río son ceros
 
-# PREPARAMOS LA MATRIZ DE PISTAS
+# PREPARAMOS LA MATRIZ DE X
 # glmnet no recibe fórmulas, recibe una matriz X (una columna por coeficiente) y un
 # vector y. La armamos una sola vez con la fórmula de m6 (la más completa), así
 # todas las ventanas usan exactamente las mismas columnas.
 datos$cuenca_f <- factor(datos$cuenca)   # factor con los 30 ríos, igual en todas las ventanas
 
-pistas_m1 <- ~ cambio_hoy + log_Q + cuenca_f + cuenca_f:log_Q +
+X_m1 <- ~ cambio_hoy + log_Q + cuenca_f + cuenca_f:log_Q +
   log1p(P) + log1p(P_ayer) + log1p(lluvia_3d) + log1p(lluvia_7d) + log1p(lluvia_30d) +
   cuenca_f:log1p(P) + cuenca_f:log1p(P_ayer) + cuenca_f:log1p(lluvia_3d) +
   Temp + temp_7d + mes + cuenca_f:temp_7d
 
-# solo filas del desarrollo con todas las pistas (los primeros 29 días de 2000 no
+# solo filas del desarrollo con todas las variables (los primeros 29 días de 2000 no
 # tienen lluvia de 30 días; lm las saltaba solo, glmnet necesita que no haya NA)
-columnas_pistas <- c("cambio_hoy", "log_Q", "P", "P_ayer", "lluvia_3d", "lluvia_7d",
+columnas_X <- c("cambio_hoy", "log_Q", "P", "P_ayer", "lluvia_3d", "lluvia_7d",
                      "lluvia_30d", "Temp", "temp_7d", "mes")
-filas_m1 <- datos$usable & complete.cases(datos[, columnas_pistas]) &
-  datos$fecha <= as.Date("2012-12-30")              # la prueba final no entra
+filas_m1 <- datos$usable & complete.cases(datos[, columnas_X]) &
+  datos$fecha <= as.Date("2012-12-30") #no podemos agregar el ultimo dia ya que es de prueba
 base_m1 <- datos[filas_m1, ]
 
-X <- sparse.model.matrix(pistas_m1, data = base_m1)[, -1]   # [, -1]: glmnet pone su propio intercepto
+#funcion del paquete Matrix, que me elimina las columnas de ceros y devuelve una matriz dispersa (sparse)
+# que es practicamente lo mismo solo que no guarda los espacios en cero,
+# por lo que ocupa menos memoria y es más rápido
+X <- sparse.model.matrix(X_m1, data = base_m1)  #matriz viene con intercepto
+# (requerido para glmnet y no tener problemas de especificidad)
 y <- base_m1$cambio_manana                                    # lo mismo que predecían m1 a m6
 dim(X)   # ~ 139.600 filas y 194 columnas
 
+colnames(X)
 # glmnet estandariza cada columna antes de castigar (standardize = TRUE), para que
 # el castigo no dependa de las unidades (mm de lluvia vs grados de temperatura).
 # Esa estandarización se calcula dentro de cada ajuste, solo con su entrenamiento.
 
 # grilla fija de 10 lambdas, de mayor (mucho castigo) a menor (casi un lm)
-lambdas <- 10^seq(-1, -5.5, length.out = 10)
+#La grilla inicial (1 a 10) se descartó porque todos sus valores producían un
+# modelo equivalente a persistencia (el lasso anulaba todos los coeficientes).
+lambdas <- c(0.1, 0.03, 0.01, 0.003, 0.001, 0.0003, 0.0001, 0)
 alphas  <- c(ridge = 0, lasso = 1)
 
 # Dos funciones de ayuda para no repetir código:
@@ -702,7 +712,7 @@ for (anio_ext in 2006:2012) {
     va <- filas_valida(anio_int)
     for (tipo in names(alphas)) {
       # un solo ajuste entrega las 10 lambdas a la vez (glmnet recorre el camino completo)
-      ajuste <- glmnet(X[tr, ], y[tr], alpha = alphas[tipo], lambda = lambdas)
+      ajuste <- glmnet(X[tr, ], y[tr], alpha = alphas[tipo], lambda = lambdas, intercept = FALSE)
       pred_cambio <- predict(ajuste, newx = X[va, ])   # matriz: una columna por lambda
       for (k in seq_along(lambdas)) {
         pred_Q <- base_m1$Q[va] * exp(pred_cambio[, k])  # deshacemos el log, como en m1 a m6
@@ -780,8 +790,9 @@ legend("bottomleft", legend = c("ridge", "lasso"), col = c("steelblue", "darkora
 # Cómo se interpreta:
 # - glmnet empata con m4: algo mejor en MAE, algo peor en RMSE, y le gana a persistencia
 #   en más ríos. La diferencia es menor que la variación entre años, así que el castigo
-#   no aporta una mejora clara. Es un resultado válido (sección 3.3 de las instrucciones).
+#   no aporta una mejora clara. 
 # - Gana ridge en la mayoría de las ventanas y lasso casi no deja coeficientes en cero:
 #   lo que ayuda no es eliminar pistas sino ACHICAR los efectos de cada río hacia el común.
 # - La comparación es más honesta que la de m4: m4 se eligió mirando las 7 ventanas,
 #   mientras que aquí alpha y lambda se eligen sin ver nunca el año que se evalúa.
+
