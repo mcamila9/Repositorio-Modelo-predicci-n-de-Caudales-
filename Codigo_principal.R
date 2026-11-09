@@ -620,41 +620,46 @@ round(cbind(
 
 # BLOQUE 8. M1: REGRESIÓN PENALIZADA CON GLMNET #
 # Los modelos m1 a m6 (bloques 5 y 6) fueron la exploración: nos dijeron qué
-# estructura necesita el problema. Aquí le damos a glmnet TODAS las pistas
-# candidatas de m6 y dejamos que la penalización decida cuánto pesa cada una,
-# en vez de elegir nosotros a mano entre m4, m5 y m6.
+# estructura necesita el problema. M1 usa los MISMOS predictores de m6, pero los
+# estima con castigo (ridge o lasso), eligiendo la intensidad del castigo por
+# validación, como piden las instrucciones (sección 3.1).
 #
 # Idea de la penalización: un lm busca los coeficientes que minimizan el error al
 # cuadrado. glmnet minimiza ese mismo error MÁS un castigo por coeficientes grandes:
 #   - ridge (alpha = 0): castiga la suma de coeficientes al cuadrado. Los achica
-#     a todos, pero no deja ninguno en cero. Con las interacciones por río, achicar
-#     significa acercar cada río al comportamiento común (punto medio entre m1 y m4).
+#     a todos, pero no deja ninguno en cero.
 #   - lasso (alpha = 1): castiga la suma de valores absolutos. Puede dejar
-#     coeficientes exactamente en cero, o sea, selecciona variables.
-#   - lambda: cuánto pesa el castigo. lambda = 0 es un lm común (como m4);
-#     lambda grande lleva todo a cero (como persistencia, porque cambio = 0).
+#     coeficientes exactamente en cero.
+#   - lambda: cuánto pesa el castigo. lambda = 0 es un lm común (como m6);
+#     lambda muy grande lleva todo a cero, o sea cambio = 0 = persistencia.
+#
+# LA MATRIZ X: los predictores de m6, con UN cambio en cómo se codifica la cuenca.
+# Por defecto, R deja un río de referencia (el primero en orden alfabético, Liquiñe)
+# y cada columna de río mide "cuánto se aparta este río de Liquiñe". En un lm eso
+# no cambia nada, pero con castigo sí: achicar esas columnas hacia cero empujaría a
+# todos los ríos a parecerse a Liquiñe, un río elegido por orden alfabético.
+# Por eso los 30 ríos van SIN referencia (30 columnas por término, no 29): así
+# ningún río es especial y el castigo trata a todos por igual. Con castigo el modelo
+# sigue teniendo solución única aunque haya una columna más por término.
 #
 # Validación (para no hacer trampa al elegir alpha y lambda):
 #   - Ventanas externas: las mismas 7 del bloque 6 (validar en cada año 2006-2012,
 #     entrenando desde 2000 hasta el 30-12 del año anterior).
 #   - Dentro de cada ventana externa, alpha y lambda se eligen con 3 particiones
 #     internas: los 3 años anteriores, cada uno también con origen creciente.
-#     Ej.: para validar 2010 se prueban las configuraciones validando en 2007, 2008 y 2009.
 #     El año externo NUNCA se usa para elegir: es una validación anidada.
-#   - 2 alphas (ridge, lasso) x 10 lambdas = 20 configuraciones
-#   - Regla de selección: mediana entre ríos de la mejora en
-#     MAE (m3/s) frente a persistencia, promediada en las 3 particiones internas.
+#   - 2 alphas (ridge, lasso) x 8 lambdas = 16 configuraciones (máximo sugerido: 20).
+#   - Regla de selección: mediana entre ríos de la mejora en MAE (m3/s) frente a
+#     persistencia, promediada en las 3 particiones internas.
 
 library(glmnet)   # regresión penalizada
-library(Matrix)   # matrices dispersas: casi todas las interacciones por río son ceros
+library(Matrix)   # matrices dispersas: casi todas las columnas por río son ceros
 
-# PREPARAMOS LA MATRIZ DE X
-# glmnet no recibe fórmulas, recibe una matriz X (una columna por coeficiente) y un
-# vector y. La armamos una sola vez con la fórmula de m6 (la más completa), así
-# todas las ventanas usan exactamente las mismas columnas.
+# PREPARAMOS LA MATRIZ X
 datos$cuenca_f <- factor(datos$cuenca)   # factor con los 30 ríos, igual en todas las ventanas
 
-X_m1 <- ~ cambio_hoy + log_Q + cuenca_f + cuenca_f:log_Q +
+# los mismos predictores que m6
+formula_m1 <- ~ cambio_hoy + log_Q + cuenca_f + cuenca_f:log_Q +
   log1p(P) + log1p(P_ayer) + log1p(lluvia_3d) + log1p(lluvia_7d) + log1p(lluvia_30d) +
   cuenca_f:log1p(P) + cuenca_f:log1p(P_ayer) + cuenca_f:log1p(lluvia_3d) +
   Temp + temp_7d + mes + cuenca_f:temp_7d
@@ -662,35 +667,42 @@ X_m1 <- ~ cambio_hoy + log_Q + cuenca_f + cuenca_f:log_Q +
 # solo filas del desarrollo con todas las variables (los primeros 29 días de 2000 no
 # tienen lluvia de 30 días; lm las saltaba solo, glmnet necesita que no haya NA)
 columnas_X <- c("cambio_hoy", "log_Q", "P", "P_ayer", "lluvia_3d", "lluvia_7d",
-                     "lluvia_30d", "Temp", "temp_7d", "mes")
+                "lluvia_30d", "Temp", "temp_7d", "mes")
 filas_m1 <- datos$usable & complete.cases(datos[, columnas_X]) &
-  datos$fecha <= as.Date("2012-12-30") #no podemos agregar el ultimo dia ya que es de prueba
+  datos$fecha <= as.Date("2012-12-30")   # la prueba final no entra
 base_m1 <- datos[filas_m1, ]
 
-#funcion del paquete Matrix, que me elimina las columnas de ceros y devuelve una matriz dispersa (sparse)
-# que es practicamente lo mismo solo que no guarda los espacios en cero,
-# por lo que ocupa menos memoria y es más rápido
-X <- sparse.model.matrix(X_m1, data = base_m1)  #matriz viene con intercepto
-# (requerido para glmnet y no tener problemas de especificidad)
-y <- base_m1$cambio_manana                                    # lo mismo que predecían m1 a m6
-dim(X)   # ~ 139.600 filas y 194 columnas
-
+# sparse.model.matrix: hace lo mismo que model.matrix (dummies, interacciones,
+# log1p), pero guarda solo los valores distintos de cero: menos memoria y más rápido.
+# contrasts.arg: los 30 ríos sin río de referencia (ver arriba).
+# [, -1]: quita la columna de intercepto, porque glmnet agrega su propio intercepto
+# (sin castigo). Si se deja, queda una columna constante que no aporta nada.
+X <- sparse.model.matrix(formula_m1, data = base_m1,
+                         contrasts.arg = list(cuenca_f = contrasts(base_m1$cuenca_f, contrasts = FALSE)))[, -1]
+y <- base_m1$cambio_manana   # variable respuesta
+dim(X)        # 139.938 filas y 200 columnas (m6 tenía 194: +1 río por cada uno de los 6 términos con cuenca)
 colnames(X)
-# glmnet estandariza cada columna antes de castigar (standardize = TRUE), para que
-# el castigo no dependa de las unidades (mm de lluvia vs grados de temperatura).
-# Esa estandarización se calcula dentro de cada ajuste, solo con su entrenamiento.
 
-# grilla fija de 10 lambdas, de mayor (mucho castigo) a menor (casi un lm)
-#La grilla inicial (1 a 10) se descartó porque todos sus valores producían un
+# glmnet estandariza cada columna antes de castigar (standardize = TRUE, por defecto),
+# para que el castigo no dependa de las unidades (mm de lluvia vs grados). Esa
+# estandarización se calcula dentro de cada ajuste, solo con su entrenamiento.
+
+# grilla de lambdas, de mayor a menor (glmnet las pide en ese orden; 0 = lm sin castigo).
+# La grilla inicial (1 a 10) se descartó porque todos sus valores producían un
 # modelo equivalente a persistencia (el lasso anulaba todos los coeficientes).
 lambdas <- c(0.1, 0.03, 0.01, 0.003, 0.001, 0.0003, 0.0001, 0)
 alphas  <- c(ridge = 0, lasso = 1)
 
-# Dos funciones de ayuda para no repetir código:
 # filas de entrenamiento y validación para un año, con los mismos cortes al 30-12 de los bloques 5 a 7
 filas_entrena <- function(a) which(base_m1$fecha <= as.Date(paste0(a - 1, "-12-30")))
 filas_valida  <- function(a) which(base_m1$fecha >= as.Date(paste0(a, "-01-01")) &
                                      base_m1$fecha <= as.Date(paste0(a, "-12-30")))
+
+# el mismo ajuste en la búsqueda interna y en el reajuste final (intercepto de glmnet incluido)
+ajustar_m1 <- function(tr, alpha) {
+  glmnet(X[tr, ], y[tr], alpha = alpha, lambda = lambdas,
+         thresh = 1e-9, maxit = 1e6)   # más precisión: lambda = 0 converge más lento
+}
 
 # mediana entre ríos de la mejora en MAE frente a persistencia (en m3/s)
 mejora_mediana <- function(pred, filas) {
@@ -700,22 +712,21 @@ mejora_mediana <- function(pred, filas) {
   median(1 - mae_mod / mae_per)
 }
 
-# VALIDACIÓN ANIDADA (tarda ~30 segundos)
+# VALIDACIÓN ANIDADA (tarda ~40 segundos)
 busqueda_m1   <- data.frame()   # una fila por ventana externa, partición interna y configuración
 resultados_m1 <- data.frame()   # una fila por año externo y río
 
 for (anio_ext in 2006:2012) {
 
-  # 1) BÚSQUEDA INTERNA: probamos las 20 configuraciones en los 3 años anteriores
+  # 1) BÚSQUEDA INTERNA: probamos las 16 configuraciones en los 3 años anteriores
   for (anio_int in (anio_ext - 3):(anio_ext - 1)) {
     tr <- filas_entrena(anio_int)
     va <- filas_valida(anio_int)
     for (tipo in names(alphas)) {
-      # un solo ajuste entrega las 10 lambdas a la vez (glmnet recorre el camino completo)
-      ajuste <- glmnet(X[tr, ], y[tr], alpha = alphas[tipo], lambda = lambdas, intercept = FALSE)
-      pred_cambio <- predict(ajuste, newx = X[va, ])   # matriz: una columna por lambda
+      ajuste <- ajustar_m1(tr, alphas[tipo])               # un ajuste entrega las 8 lambdas a la vez
+      pred_cambio <- predict(ajuste, newx = X[va, ])       # una columna por lambda
       for (k in seq_along(lambdas)) {
-        pred_Q <- base_m1$Q[va] * exp(pred_cambio[, k])  # deshacemos el log, como en m1 a m6
+        pred_Q <- base_m1$Q[va] * exp(pred_cambio[, k])    # deshacemos el log, como en m1 a m6
         busqueda_m1 <- rbind(busqueda_m1, data.frame(
           anio_ext = anio_ext, anio_int = anio_int, tipo = tipo, lambda = lambdas[k],
           mejora = mejora_mediana(pred_Q, va)))
@@ -729,14 +740,14 @@ for (anio_ext in 2006:2012) {
   esta_ventana <- busqueda_m1[busqueda_m1$anio_ext == anio_ext, ]
   promedio <- aggregate(mejora ~ tipo + lambda, data = esta_ventana, FUN = mean)
   elegida <- promedio[which.max(promedio$mejora), ]
+  k <- match(elegida$lambda, lambdas)
 
   # 3) REAJUSTAMOS con todo el entrenamiento de la ventana externa y evaluamos UNA vez
   tr <- filas_entrena(anio_ext)
   va <- filas_valida(anio_ext)
-  ajuste <- glmnet(X[tr, ], y[tr], alpha = alphas[elegida$tipo], lambda = lambdas)
-  pred_Q <- base_m1$Q[va] *
-    exp(predict(ajuste, newx = X[va, ], s = elegida$lambda)[, 1])
-  coef_no_cero <- sum(coef(ajuste, s = elegida$lambda) != 0)   # cuántos coeficientes sobreviven
+  ajuste <- ajustar_m1(tr, alphas[elegida$tipo])
+  pred_Q <- base_m1$Q[va] * exp(predict(ajuste, newx = X[va, ])[, k])
+  coef_no_cero <- sum(as.matrix(coef(ajuste))[-1, k] != 0)   # cuántos coeficientes sobreviven (sin intercepto)
 
   # 4) errores por río (igual que en el bloque 7), guardando cuántos días se evaluaron
   for (cu in unique(base_m1$cuenca[va])) {
@@ -752,8 +763,8 @@ for (anio_ext in 2006:2012) {
       RMSE_m1   = sqrt(mean((p - obs)^2))
     ))
   }
-  cat("Listo", anio_ext, "- elegido:", elegida$tipo, "lambda =", signif(elegida$lambda, 2),
-      "-", coef_no_cero, "coeficientes distintos de cero\n")
+  cat("Listo", anio_ext, "- elegido:", elegida$tipo, "lambda =", elegida$lambda,
+      "-", coef_no_cero, "de", ncol(X), "coeficientes distintos de cero\n")
 }
 
 # RESULTADOS
@@ -780,19 +791,14 @@ unique(resultados_m1[, c("anio", "tipo", "lambda", "coef_no_cero")])
 # curva de la búsqueda: mejora promedio de cada configuración en las 21 particiones internas
 # (sirve para ver que la lambda elegida no quedó en el borde de la grilla)
 curva_m1 <- aggregate(mejora ~ tipo + lambda, data = busqueda_m1, FUN = mean)
-plot(log10(curva_m1$lambda), curva_m1$mejora,
-     col = ifelse(curva_m1$tipo == "ridge", "steelblue", "darkorange"), pch = 19,
-     xlab = "log10(lambda): castigo (derecha = más castigo)",
+round(xtabs(mejora ~ lambda + tipo, data = curva_m1), 3)
+# en el eje x va la posición en la grilla (lambda = 0 no tiene logaritmo)
+posicion <- match(curva_m1$lambda, lambdas)
+plot(posicion, curva_m1$mejora, xaxt = "n", pch = 19,
+     col = ifelse(curva_m1$tipo == "ridge", "steelblue", "darkorange"),
+     xlab = "lambda (izquierda = más castigo)",
      ylab = "Mejora mediana frente a persistencia (MAE)",
      main = "Búsqueda de la penalización (particiones internas)")
-legend("bottomleft", legend = c("ridge", "lasso"), col = c("steelblue", "darkorange"), pch = 19)
-
-# Cómo se interpreta:
-# - glmnet empata con m4: algo mejor en MAE, algo peor en RMSE, y le gana a persistencia
-#   en más ríos. La diferencia es menor que la variación entre años, así que el castigo
-#   no aporta una mejora clara. 
-# - Gana ridge en la mayoría de las ventanas y lasso casi no deja coeficientes en cero:
-#   lo que ayuda no es eliminar pistas sino ACHICAR los efectos de cada río hacia el común.
-# - La comparación es más honesta que la de m4: m4 se eligió mirando las 7 ventanas,
-#   mientras que aquí alpha y lambda se eligen sin ver nunca el año que se evalúa.
+axis(1, at = seq_along(lambdas), labels = format(lambdas, scientific = FALSE, drop0trailing = TRUE))
+legend("bottomright", legend = c("ridge", "lasso"), col = c("steelblue", "darkorange"), pch = 19)
 
