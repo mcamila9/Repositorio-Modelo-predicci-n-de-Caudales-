@@ -920,6 +920,18 @@ print(resumen_rf, row.names = FALSE)
 cat("\n=== RESUMEN GLOBAL RF ===\n")
 cat("MAE mediana  (7 ventanas):", round(median(resultados_rf$mejora_MAE), 3), "\n")
 cat("RMSE mediana (7 ventanas):", round(median(resultados_rf$mejora_RMSE), 3), "\n")
+#RESULTADOS: 
+#EXPLICACIÓN DE LA TABLA:
+# Se observa que la mejora en MAE va del 31.2% en el año más seco, 2010
+# al 44.7% en 2009. Esto demuestra una ESTABILIDAD ENORME. 
+# En los 7 años, el modelo le gana a persistencia en al menos 27 de los 30 ríos.
+# En los años 2006 y 2008, le gana a TODOS los ríos.
+# EXPLICACIÓN DEL RESULTADO GLOBAL:
+# MAE: 36.1%. Significa que en el río típico random forest va a reducir 
+# el error en  un 36.1% comparado con decir "mañana igual que hoy". 
+# Recordando que en m4 solo obteniamos un 12.5%.
+# RMSE: 30.6%. Significa que en los días de crecidas donde tenemos que el error 
+# es grande, el modelo también reduce el error en un 30.6%.
 
 # ============================================================
 # 9.6. Importancia de Variables (con todo el entrenamiento)
@@ -943,3 +955,35 @@ rf_full <- randomForest(
 
 print(round(importance(rf_full), 2))
 varImpPlot(rf_full, main = "Importancia de variables (50 árboles)")
+# EXPLICACIÓN DEL GRÁFICO DE IMPORTANCIA (varImpPlot)
+# ============================================================
+# El gráfico tiene dos paneles. Cada uno 
+# responde una pregunta distinta sobre las variables:
+
+# PANEL IZQUIERDO: %IncMSE El "¿Qué pasa si pierdo la pista?"
+# Mide cuánto empeora el error del modelo si destruimos/permutamos 
+# esa variable. Es la medida más importante de PODER PREDICTIVO.
+# Resultados:
+# 1. `cambio_hoy` (24.76%): Si le ocultamos al modelo si el 
+#    río venía subiendo o bajando, el error se dispara. Es la memoria inmediata.
+# 2. `lluvia_30d` (16.04%): La lluvia del último mes (saturación del suelo) 
+#    es más importante que la lluvia de hoy (`P`, 14.06%). 
+# 3. `mes` (14.45%) y `cuenca` (13.93%): La estacionalidad y la identidad 
+#    del río también son claves.
+# 4. `Temp` (6.92%): La temperatura de hoy aporta poco de forma aislada 
+#    porque su efecto (deshielo) ya está capturado por `temp_7d` (11.61%).
+
+#PANEL DERECHO: IncNodePurity El "¿Cuántas reglas construiste?"
+# Mide la reducción de impureza (varianza) que logra la variable en los 
+# nodos de los árboles. Es decir, cuánto usa el árbol esa variable para 
+# hacer cortes y separar los datos.
+# Resultados:
+# 1. `P` (1878.02): El modelo usa la lluvia de hoy hasta el cansancio 
+#    para hacer divisiones (ej. "¿Llueve más de 5mm? Sí/No").
+# 2. `cuenca` (749.93): ¡Ojo aquí! Aunque en el panel izquierdo tiene 
+#    un % bajo (13.9%), aquí es la segunda más alta. El árbol usa el código 
+#    del río CONSTANTEMENTE para personalizar las reglas (ej. "Si es San 
+#    Pedro, haz esto; si es Maule, haz esto otro"). Sin embargo, si la 
+#    borras, el modelo no muere porque compensa con otras variables.
+# 3. `cambio_hoy` (661.76): Muy usado para cortar, consistente con su 
+#    alta importancia predictiva.
