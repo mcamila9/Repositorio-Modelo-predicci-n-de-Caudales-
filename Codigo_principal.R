@@ -753,3 +753,180 @@ cat("M1 ganador:", ganador$tipo, "lambda =", ganador$lambda,
     "| mejora MAE:", ganador$mejora_MAE, "| mejora RMSE:", ganador$mejora_RMSE, "\n")
 # el ganador, año por año
 round(subset(por_anio, tipo == ganador$tipo & lambda == ganador$lambda)[, c("anio", "mejora_MAE", "mejora_RMSE")], 3)
+
+
+#BLOQUE 9 MODELOS M3: Random Forest
+# ============================================================
+#M3: RANDOM FOREST PARALELIZADO (7 NÚCLEOS)
+# ============================================================
+# 
+# DECISIÓN DE DISEÑO: Usamos `parallel` para procesar las 7 ventanas
+# al mismo tiempo (una por núcleo). así que paralelizamos el loop de ventanas.
+# Usamos 7 núcleos (1 por ventana). Con 50 árboles por ventana,
+# esto debería tomar ~1h en total.
+#
+# predecimos: cambio_manana (log-cambio).
+
+library(randomForest)
+library(parallel)
+
+# ============================================================
+# 9.1. Configuración del clúster
+# ============================================================
+# Usamos min(nucleos - 1, 7) para usar como máximo 7 núcleos
+# (uno por cada ventana) y no sobrecargar la máquina.
+n_cores <- min(detectCores() - 1, 7)
+
+cat("\n>>> Iniciando Random Forest con", n_cores, "núcleos en paralelo...\n")
+cat(">>> Tiempo estimado: ~1h en total.\n")
+cat(">>> Verás el progreso de cada ventana a medida que terminen.\n\n")
+
+cl <- makeCluster(n_cores)
+
+# ============================================================
+# 9.2. Exportar datos y funciones a los núcleos
+# ============================================================
+# Definimos `vars_rf` AQUÍ para asegurarnos de que existe
+vars_rf <- c("cambio_hoy", "log_Q",
+             "P", "P_ayer", "lluvia_3d", "lluvia_7d", "lluvia_30d",
+             "temp_7d", "cuenca", "mes","Temp")
+
+# Redefinir `usable` con TODOS los predictores
+datos$usable <- !is.na(datos$Q) &
+  !is.na(datos$Q_manana) &
+  !is.na(datos$Q_ayer) &
+  !is.na(datos$P) &
+  !is.na(datos$P_ayer) &
+  !is.na(datos$lluvia_3d) &
+  !is.na(datos$lluvia_7d) &
+  !is.na(datos$lluvia_30d) &
+  !is.na(datos$temp_7d) &
+  !is.na(datos$cuenca) &
+  !is.na(datos$mes) &
+  !is.na(datos$Temp)
+
+mae  <- function(y, yhat) mean(abs(y - yhat), na.rm = TRUE)
+rmse <- function(y, yhat) sqrt(mean((y - yhat)^2, na.rm = TRUE))
+
+# Exportar a los núcleos
+clusterExport(cl, c("datos", "vars_rf", "mae", "rmse"))
+clusterEvalQ(cl, library(randomForest))
+
+# ============================================================
+# 9.3. Función que corre UNA ventana
+# ============================================================
+correr_ventana <- function(anio) {
+  
+  t0 <- Sys.time()
+  
+  # Split temporal
+  train <- subset(datos, usable & fecha <= as.Date(paste0(anio - 1, "-12-30")))
+  valid <- subset(datos, usable & fecha >= as.Date(paste0(anio, "-01-01")) &
+                    fecha <= as.Date(paste0(anio, "-12-30")))
+  
+  # Filtro de seguridad extra
+  train <- train[!is.na(train$cambio_manana), ]
+  valid <- valid[!is.na(valid$cambio_manana), ]
+  
+  # Conversión a factor
+  train$cuenca <- factor(train$cuenca)
+  valid$cuenca <- factor(valid$cuenca)
+  train$mes    <- factor(train$mes)
+  valid$mes    <- factor(valid$mes)
+  
+  # Ajustar modelo con 50 árboles
+  set.seed(3407)
+  rf_fit <- randomForest(
+    x = train[, vars_rf],
+    y = train$cambio_manana,
+    ntree = 50,
+    mtry  = max(1, floor(length(vars_rf) / 3)),
+    importance = TRUE
+  )
+  
+  # Predecir y deshacer el log
+  pred_rf_log <- predict(rf_fit, newdata = valid[, vars_rf])
+  pred_rf     <- valid$Q * exp(pred_rf_log)
+  pred_pers   <- valid$Q
+  
+  # Métricas por río
+  res <- data.frame()
+  for (cu in unique(valid$cuenca)) {
+    i <- which(valid$cuenca == cu)
+    d_y <- valid$Q_manana[i]
+    res <- rbind(res, data.frame(
+      anio      = anio,
+      cuenca    = cu,
+      dias      = length(i),
+      MAE_pers  = mae(d_y, pred_pers[i]),
+      MAE_rf    = mae(d_y, pred_rf[i]),
+      RMSE_pers = rmse(d_y, pred_pers[i]),
+      RMSE_rf   = rmse(d_y, pred_rf[i])
+    ))
+  }
+  
+  # Imprimir estado de la ventana (esto saldrá en la consola principal)
+  tiempo <- difftime(Sys.time(), t0, units = "mins")
+  cat("✅ Listo", anio, "| Tiempo:", round(tiempo, 2), "min | OOB RMSE:", 
+      round(sqrt(tail(rf_fit$mse, 1)), 4), "\n")
+  
+  return(res)
+}
+
+# ============================================================
+# 9.4. Ejecutar en paralelo esto se demora
+# ============================================================
+t0_global <- Sys.time()
+resultados_lista <- parLapply(cl, 2006:2012, correr_ventana)
+tiempo_global <- difftime(Sys.time(), t0_global, units = "mins")
+
+# Cerrar el clúster (liberar los núcleos)
+stopCluster(cl)
+
+# ============================================================
+# 9.5. Unir resultados y calcular mejoras
+# ============================================================
+resultados_rf <- do.call(rbind, resultados_lista)
+
+resultados_rf$mejora_MAE  <- 1 - resultados_rf$MAE_rf  / resultados_rf$MAE_pers
+resultados_rf$mejora_RMSE <- 1 - resultados_rf$RMSE_rf / resultados_rf$RMSE_pers
+
+cat("\n========================================\n")
+cat("¡TERMINADO! Tiempo total:", round(tiempo_global, 1), "minutos\n")
+cat("========================================\n\n")
+
+# Resumen por año
+cat("=== MEJORA MEDIANA POR AÑO (RF) ===\n")
+resumen_rf <- data.frame(
+  anio = 2006:2012,
+  MAE_mediana  = tapply(resultados_rf$mejora_MAE,  resultados_rf$anio, median),
+  RMSE_mediana = tapply(resultados_rf$mejora_RMSE, resultados_rf$anio, median),
+  rios_mejoran = tapply(resultados_rf$mejora_MAE > 0, resultados_rf$anio, sum)
+)
+print(resumen_rf, row.names = FALSE)
+
+# Resumen global
+cat("\n=== RESUMEN GLOBAL RF ===\n")
+cat("MAE mediana  (7 ventanas):", round(median(resultados_rf$mejora_MAE), 3), "\n")
+cat("RMSE mediana (7 ventanas):", round(median(resultados_rf$mejora_RMSE), 3), "\n")
+
+# ============================================================
+# 9.6. Importancia de Variables (con todo el entrenamiento)
+# ============================================================
+cat("\n=== IMPORTANCIA DE VARIABLES (RF) ===\n")
+train_full <- subset(datos, usable & fecha <= as.Date("2012-12-30"))
+train_full <- train_full[!is.na(train_full$cambio_manana), ]
+train_full$cuenca <- factor(train_full$cuenca)
+train_full$mes    <- factor(train_full$mes)
+
+set.seed(3407)
+rf_full <- randomForest(
+  x = train_full[, vars_rf],
+  y = train_full$cambio_manana,
+  ntree = 50,
+  mtry  = max(1, floor(length(vars_rf) / 3)),
+  importance = TRUE
+)
+
+print(round(importance(rf_full), 2))
+varImpPlot(rf_full, main = "Importancia de variables (50 árboles)")
