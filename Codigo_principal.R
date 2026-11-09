@@ -712,93 +712,44 @@ mejora_mediana <- function(pred, filas) {
   median(1 - mae_mod / mae_per)
 }
 
-# VALIDACIÓN ANIDADA (tarda ~40 segundos)
-busqueda_m1   <- data.frame()   # una fila por ventana externa, partición interna y configuración
-resultados_m1 <- data.frame()   # una fila por año externo y río
-
+# TODAS LAS CONFIGURACIONES EN LAS 7 VENTANAS: cada (tipo, lambda) se evalúa en 2006-2012
+# y se elige la de mayor mejora mediana en MAE promediada en las 7 ventanas.
+resultados_grilla <- data.frame()   # una fila por ventana, tipo, lambda y río
 for (anio_ext in 2006:2012) {
-
-  # 1) BÚSQUEDA INTERNA: probamos las 16 configuraciones en los 3 años anteriores
-  for (anio_int in (anio_ext - 3):(anio_ext - 1)) {
-    tr <- filas_entrena(anio_int)
-    va <- filas_valida(anio_int)
-    for (tipo in names(alphas)) {
-      ajuste <- ajustar_m1(tr, alphas[tipo])               # un ajuste entrega las 8 lambdas a la vez
-      pred_cambio <- predict(ajuste, newx = X[va, ])       # una columna por lambda
-      for (k in seq_along(lambdas)) {
-        pred_Q <- base_m1$Q[va] * exp(pred_cambio[, k])    # deshacemos el log, como en m1 a m6
-        busqueda_m1 <- rbind(busqueda_m1, data.frame(
-          anio_ext = anio_ext, anio_int = anio_int, tipo = tipo, lambda = lambdas[k],
-          mejora = mejora_mediana(pred_Q, va)))
-      }
-    }
-  }
-
-  # 2) ELEGIMOS la configuración con mejor mejora promedio en las 3 particiones internas
-  # (se filtra con [ ] y no con subset: dentro de subset, "anio_ext" sería la columna
-  #  de la tabla y no el año del bucle, y la condición daría siempre TRUE)
-  esta_ventana <- busqueda_m1[busqueda_m1$anio_ext == anio_ext, ]
-  promedio <- aggregate(mejora ~ tipo + lambda, data = esta_ventana, FUN = mean)
-  elegida <- promedio[which.max(promedio$mejora), ]
-  k <- match(elegida$lambda, lambdas)
-
-  # 3) REAJUSTAMOS con todo el entrenamiento de la ventana externa y evaluamos UNA vez
   tr <- filas_entrena(anio_ext)
   va <- filas_valida(anio_ext)
-  ajuste <- ajustar_m1(tr, alphas[elegida$tipo])
-  pred_Q <- base_m1$Q[va] * exp(predict(ajuste, newx = X[va, ])[, k])
-  coef_no_cero <- sum(as.matrix(coef(ajuste))[-1, k] != 0)   # cuántos coeficientes sobreviven (sin intercepto)
-
-  # 4) errores por río (igual que en el bloque 7), guardando cuántos días se evaluaron
-  for (cu in unique(base_m1$cuenca[va])) {
-    i   <- va[base_m1$cuenca[va] == cu]
-    obs <- base_m1$Q_manana[i]
-    p   <- pred_Q[base_m1$cuenca[va] == cu]
-    resultados_m1 <- rbind(resultados_m1, data.frame(
-      anio = anio_ext, cuenca = cu, dias = length(i),
-      tipo = elegida$tipo, lambda = elegida$lambda, coef_no_cero = coef_no_cero,
-      MAE_pers  = mean(abs(base_m1$Q[i] - obs)),
-      MAE_m1    = mean(abs(p - obs)),
-      RMSE_pers = sqrt(mean((base_m1$Q[i] - obs)^2)),
-      RMSE_m1   = sqrt(mean((p - obs)^2))
-    ))
+  for (tipo in names(alphas)) {
+    ajuste <- ajustar_m1(tr, alphas[tipo])            # un ajuste entrega las 8 lambdas
+    pred_cambio <- predict(ajuste, newx = X[va, ])
+    for (k in seq_along(lambdas)) {
+      pred_Q <- base_m1$Q[va] * exp(pred_cambio[, k])
+      obs <- base_m1$Q_manana[va]; cu <- base_m1$cuenca[va]
+      mae_m  <- tapply(abs(pred_Q - obs), cu, mean)
+      mae_p  <- tapply(abs(base_m1$Q[va] - obs), cu, mean)
+      rmse_m <- sqrt(tapply((pred_Q - obs)^2, cu, mean))
+      rmse_p <- sqrt(tapply((base_m1$Q[va] - obs)^2, cu, mean))
+      resultados_grilla <- rbind(resultados_grilla, data.frame(
+        anio = anio_ext, tipo = tipo, lambda = lambdas[k], cuenca = names(mae_m),
+        dias = as.vector(table(cu)[names(mae_m)]),
+        MAE_m1 = mae_m, MAE_pers = mae_p, RMSE_m1 = rmse_m, RMSE_pers = rmse_p))
+    }
   }
-  cat("Listo", anio_ext, "- elegido:", elegida$tipo, "lambda =", elegida$lambda,
-      "-", coef_no_cero, "de", ncol(X), "coeficientes distintos de cero\n")
+  cat("Listo", anio_ext, "\n")
 }
+resultados_grilla$mejora_MAE  <- 1 - resultados_grilla$MAE_m1  / resultados_grilla$MAE_pers
+resultados_grilla$mejora_RMSE <- 1 - resultados_grilla$RMSE_m1 / resultados_grilla$RMSE_pers
 
-# RESULTADOS
-resultados_m1$mejora_MAE  <- 1 - resultados_m1$MAE_m1  / resultados_m1$MAE_pers
-resultados_m1$mejora_RMSE <- 1 - resultados_m1$RMSE_m1 / resultados_m1$RMSE_pers
+# por año: mediana entre ríos; luego promedio de los 7 años
+por_anio <- aggregate(cbind(mejora_MAE, mejora_RMSE) ~ anio + tipo + lambda,
+                      data = resultados_grilla, FUN = median)
+tabla_grilla <- aggregate(cbind(mejora_MAE, mejora_RMSE) ~ tipo + lambda, data = por_anio, FUN = mean)
+tabla_grilla <- tabla_grilla[order(-tabla_grilla$mejora_MAE), ]
+tabla_grilla$mejora_MAE <- round(tabla_grilla$mejora_MAE, 3)
+tabla_grilla$mejora_RMSE <- round(tabla_grilla$mejora_RMSE, 3)
+tabla_grilla                                         # la tabla que justifica la elección
 
-# comparamos con m4 (lm sin castigo) del bloque 7, en las mismas ventanas
-comparacion_m1 <- data.frame(
-  anio         = 2006:2012,
-  MAE_m4       = tapply(resultados_m4$mejora_MAE,  resultados_m4$anio, median),
-  MAE_glmnet   = tapply(resultados_m1$mejora_MAE,  resultados_m1$anio, median),
-  RMSE_m4      = tapply(resultados_m4$mejora_RMSE, resultados_m4$anio, median),
-  RMSE_glmnet  = tapply(resultados_m1$mejora_RMSE, resultados_m1$anio, median),
-  gana_m4      = tapply(resultados_m4$mejora_MAE > 0, resultados_m4$anio, sum),
-  gana_glmnet  = tapply(resultados_m1$mejora_MAE > 0, resultados_m1$anio, sum)
-)
-comparacion_m1[, 2:5] <- round(comparacion_m1[, 2:5], 3)
-comparacion_m1
-round(colMeans(comparacion_m1[, 2:5]), 3)   # promedio de las 7 ventanas
-
-# qué configuración se eligió en cada ventana
-unique(resultados_m1[, c("anio", "tipo", "lambda", "coef_no_cero")])
-
-# curva de la búsqueda: mejora promedio de cada configuración en las 21 particiones internas
-# (sirve para ver que la lambda elegida no quedó en el borde de la grilla)
-curva_m1 <- aggregate(mejora ~ tipo + lambda, data = busqueda_m1, FUN = mean)
-round(xtabs(mejora ~ lambda + tipo, data = curva_m1), 3)
-# en el eje x va la posición en la grilla (lambda = 0 no tiene logaritmo)
-posicion <- match(curva_m1$lambda, lambdas)
-plot(posicion, curva_m1$mejora, xaxt = "n", pch = 19,
-     col = ifelse(curva_m1$tipo == "ridge", "steelblue", "darkorange"),
-     xlab = "lambda (izquierda = más castigo)",
-     ylab = "Mejora mediana frente a persistencia (MAE)",
-     main = "Búsqueda de la penalización (particiones internas)")
-axis(1, at = seq_along(lambdas), labels = format(lambdas, scientific = FALSE, drop0trailing = TRUE))
-legend("bottomright", legend = c("ridge", "lasso"), col = c("steelblue", "darkorange"), pch = 19)
-
+ganador <- tabla_grilla[1, ]
+cat("M1 ganador:", ganador$tipo, "lambda =", ganador$lambda,
+    "| mejora MAE:", ganador$mejora_MAE, "| mejora RMSE:", ganador$mejora_RMSE, "\n")
+# el ganador, año por año
+round(subset(por_anio, tipo == ganador$tipo & lambda == ganador$lambda)[, c("anio", "mejora_MAE", "mejora_RMSE")], 3)
