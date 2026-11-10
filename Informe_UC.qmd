@@ -59,20 +59,113 @@ link-citations: true
 Escribe aquí el resumen ejecutivo del informe (máximo 250 palabras).
 
 ## Problema y datos
+\textcolor{blue}{¿Qué es una cuenca? - Listo}
 
 Una cuenca corresponde a una zona donde el agua proveniente de lluvias, deshielos o manantiales desemboca en un cuerpo de agua común como un río, lago u océano. Las cuencas desempeñan un papel crucial pues determinan tanto cantidad como disponibilidad del agua, además de ser fundamentales para la agricultura (Washington State Department of Ecology, s. f.).
 
+\textcolor{blue}{Por qué es importante predecir cuencas y cual es la dificultad - Listo}
+
 En ese contexto, la predicción del caudal del día siguiente constituye una herramienta potencialmente útil para la gestión y planificación de los recursos hídricos. Sin embargo, esta tarea presenta dificultades debido a la variabilidad de las condiciones meteorológicas y a las diferencias físicas entre cuencas, que pueden provocar comportamientos hidrológicos distintos.
+
+\textcolor{blue}{Cómo lo haremos - Listo}
 
 Para responder la pregunta de investigación se comparan distintos procedimientos estadísticos en base a registros históricos y características del caudal, además de antecenetes de precipitación y temperatura.
 
+\textcolor{blue}{Origen de los datos - Listo}
+
 Los datos provienen de CAMELS-CL (Catchment Attributes and Meteorology for Large Sample Studies, Chile), la primera base de datos hidrometeorológica y de atributos a gran escala desarrollada para Chile. Esta reúne información de 516 cuencas chilenas y fue presentada por Alvarez-Garreton et al. (2018).
 
-Para este estudio se utilizó el subconjunto de datos de CAMELS-CL proporcionado para el Caso 01 del curso EYP3407, cuya copia fue preparada el 12 de octubre de 2026. Este comprende 30 cuencas ubicadas entre los 33° y 40° de latitud sur, seleccionadas según la mayor cantidad de días con caudal observado entre 2000 y 2012, utilizando el identificador de cuenca como criterio de desempate. Los registros abarcan desde el 1 de enero de 2000 hasta el 31 de diciembre de 2016, con 6.210 fechas diarias. El conjunto incluye cuatro archivos: `caudal_m3s.csv`, `precipitacion_mm.csv`, `temperatura_media_c.csv` y `atributos.csv`, acompañados de un diccionario de atributos basado en Alvarez-Garreton et al. (2018). Los datos originales se encuentran disponibles bajo licencia Creative Commons Attribution 4.0 (CC BY 4.0). Para garantizar la reproducibilidad del análisis, los archivos originales se conservan sin modificaciones manuales y todas las transformaciones y procedimientos de depuración se realizan mediante código R.
+En particular, los datos del informe corresponden a un subconjunto de datos de CAMELS-CL proporcionado para el **Caso 01 del curso EYP3407**, cuya copia de datos fue preparada el 12 de octubre 2026. Dicho subconjunto comprende 30 cuencas ubicadas entre los 33° y 40° de latitud sur, seleccionadas según la mayor cantidad de días con caudal observado entre 2000 y 2012, utilizando el identificador de cuenca como criterio de desempate. Se dispone de cuatro archivos originales con la información de los caudales $Q$, la precipitación y temperatura registrada, además de un diccionario con atributos adicionales. Todos los datos registrados corresponden a la ventana de tiempo generada entre 01/01/2000 y 31/12/2016 (Tabla \ref{tab:archivos}).
 
-La población de estudio corresponde a las observaciones diarias de las 30 cuencas chilenas incluidas en el subconjunto de datos entregado, durante el período 2000–2016. La unidad de observación se definió como una combinación de cuenca y fecha, utilizando ambas variables como clave única para identificar cada registro. Originalmente, las series de caudal, precipitación y temperatura contenían 6.210 fechas dispuestas en las filas y 30 cuencas en las columnas. Para construir la muestra analítica, estas series se transformaron de formato ancho a formato largo, obteniendo 186.300 observaciones por archivo, correspondientes a combinaciones cuenca–fecha (@fig-muestra).
+```{r}
+#| echo: false
+#| results: asis
+#| warning: false
 
-Posteriormente, las tres series se integraron mediante el identificador de cuenca y la fecha, estableciendo relaciones uno a uno entre registros. Se verificó la unicidad de las claves y la conservación de las 186.300 observaciones después de cada unión, manteniendo las 30 cuencas originales y sin generar registros adicionales por duplicación. Por su parte, el archivo `atributos.csv` contiene una fila por cuenca, por lo que su eventual integración a la base diaria correspondería a una relación muchos a uno. Las variables de caudal, precipitación y temperatura media se encuentran expresadas en m³/s, mm/día y °C, respectivamente (Tabla \ref{tab:muestra}).
+# Cargar archivos
+caudal <- read.csv("datos/caudal_m3s.csv", check.names = FALSE)
+precipitacion <- read.csv("datos/precipitacion_mm.csv", check.names = FALSE)
+temperatura <- read.csv("datos/temperatura_media_c.csv", check.names = FALSE)
+atributos <- read.csv("datos/atributos.csv", check.names = FALSE)
+
+# TABLA DE ARCHIVOS ORIGINALES
+tabla_archivos <- data.frame(
+  Archivo = c(
+    "\\texttt{caudal\\_m3s.csv}",
+    "\\texttt{precipitacion\\_mm.csv}",
+    "\\texttt{temperatura\\_media\\_c.csv}",
+    "\\texttt{atributos.csv}"
+  ),
+  Descripcion = c(
+    "Caudal diario de las 30 cuencas, expresado en m³/s.",
+    "Precipitación diaria CR2MET, expresada en mm/día.",
+    "Temperatura media diaria CR2MET, expresada en °C.",
+    "Atributos físicos, climáticos e hidrológicos de las cuencas."
+  ),
+  Observaciones = c(
+    nrow(caudal),
+    nrow(precipitacion),
+    nrow(temperatura),
+    nrow(atributos)
+  )
+)
+
+tabla_archivos$Observaciones <- format(
+  tabla_archivos$Observaciones,
+  big.mark = ".",
+  scientific = FALSE,
+  trim = TRUE
+)
+
+# Generar tabla en LaTeX
+latex_archivos <- knitr::kable(
+  tabla_archivos,
+  format = "latex",
+  booktabs = FALSE,
+  align = c("l", "l", "r"),
+  escape = FALSE,
+  linesep = ""
+)
+
+# Agregar líneas verticales en TODOS los bordes
+latex_archivos <- as.character(latex_archivos)
+
+latex_archivos <- sub(
+  "\\\\begin\\{tabular\\}\\{[^}]+\\}",
+  "\\\\begin{tabular}{|l|l|r|}",
+  latex_archivos
+)
+
+cat(paste0(
+  "\\begin{table}[H]\n",
+  "\\centering\n",
+  "\\small\n",
+  latex_archivos,
+  "\n\\caption{Archivos originales utilizados en el análisis}\n",
+  "\\label{tab:archivos}\n",
+  "\\end{table}\n"
+))
+```
+
+\textcolor{blue}{Definir población, unidad, respuesta - Listo}
+
+La **población de estudio** corresponde a las observaciones diarias de las 30 cuencas chilenas incluídas en el subconjunto de datos entregado en la respectiva ventana de tiempo.
+
+La **unidad de observación** se define como un par entre la cuenca y la fecha, de manera que ambas variables en conjunto identifican cada registro. Se define $Q_t$ como el caudal observado en una cuenca durante el día de origen $t$, con $t \in \{1, 2, \cdots, 6.210\}$ correspondiente a las fechas disponibles.
+
+La **variable respuesta** corresponde al caudal del día siguiente definido como $Q_{t+1}$.
+
+\textcolor{blue}{Construcción de la muestra estadística}
+
+Para construir la muestra analítica se re-estructuró inicialmente $\texttt{caudal\_m3s.csv}$ que contiene 6.210 filas y 30 columnas correspondientes a las fechas e identificadores de las cuencas (respectivamente), de tal manera que en el resultado, cada fila contenga el par (ID cuenca - fecha $t$), generando un total de 186.300 observaciones (@fig-muestra).
+
+Posteriormente, las tres series se integraron mediante el identificador de cuenca y la fecha, estableciendo relaciones uno a uno entre registros. Se verificó la unicidad de las claves y la conservación de las 186.300 observaciones después de cada unión, manteniendo las 30 cuencas originales, sin duplicados.
+
+
+
+\textcolor{blue}{De aquí para abajno no cuenta}
+
+Por su parte, el archivo `atributos.csv` contiene una fila por cuenca, por lo que su eventual integración a la base diaria correspondería a una relación muchos a uno. Las variables de caudal, precipitación y temperatura media se encuentran expresadas en m³/s, mm/día y °C, respectivamente (Tabla \ref{tab:muestra}).
 
 Durante la revisión de los datos se identificaron 3.038 registros de caudal faltantes y una única observación con caudal igual a cero ($Q=0$), correspondiente a la estación del río Toltén, en la Región de La Araucanía, el 1 de enero de 2003. La cuenca del río Toltén presenta un clima templado cálido lluvioso con influencia mediterránea en sus sectores medio y bajo, y un clima templado frío lluvioso con influencia mediterránea en su sector precordillerano (Dirección General de Aguas [DGA], 2004, p. 5). Considerando estas características, el registro de caudal cero fue identificado como potencialmente anómalo. Dado que el análisis contempla transformaciones logarítmicas, se decidió tratar dicho registro como un valor faltante, sin asumir que se haya confirmado un error de medición. Con ello, se obtuvo un total de 3.039 registros de caudal faltantes.
 
@@ -83,10 +176,6 @@ La variable respuesta se definió como el caudal observado al día siguiente, $Q
 ```{r}
 #| echo: false
 #| output: false
-
-caudal <- read.csv("datos/caudal_m3s.csv", check.names = FALSE)
-precipitacion <- read.csv("datos/precipitacion_mm.csv", check.names = FALSE)
-temperatura   <- read.csv("datos/temperatura_media_c.csv", check.names = FALSE)
 
 # Para caudal:
 dim(caudal)               # 6210 filas (días) y 31 columnas (fecha + 30 ríos)
@@ -317,7 +406,6 @@ sort(mae_relativo)
 
 # Ahora, veremos qué atributos tienen esos ríos (los atributos se usan aquí solo
 # para describir)
-atributos <- read.csv("datos/atributos.csv", check.names = FALSE)
 
 orden <- sort(mae_relativo)
 extremos <- names(c(head(orden, 3), tail(orden, 3)))   # los 3 mejores y los 3 peores

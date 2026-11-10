@@ -951,17 +951,6 @@ k.check(m2_k15)
 # así que paralelizamos el loop de ventanas.
 # queremos predecir: cambio_manana (log-cambio), igual que M1 y M2.
 #
-# CAMBIOS RESPECTO DE LA PRIMERA VERSIÓN:
-#  1) Búsqueda de hiperparámetros (las instrucciones la exigen): 6 configuraciones
-#     (mtry x nodesize), evaluadas en las mismas 7 ventanas y con la misma regla que M1 y M2.
-#  2) Cada árbol se entrena con una submuestra de 20 000 filas (sampsize). Con las ~129 000
-#     filas completas cada árbol tardaba ~17 segundos (50 árboles ~ 14 min por ventana);
-#     con la submuestra tarda 0,1 a 0,3 segundos. La submuestra es parte normal de un
-#     bosque aleatorio: cada árbol ya usaba una muestra bootstrap distinta.
-#  3) Con eso alcanza para 200 árboles en vez de 50.
-#  4) Ya no se sobrescribe datos$usable (lo usan M1 y M2): se crea datos$usable_rf.
-#  5) El resumen usa la misma agregación que M1 y M2 (mediana entre ríos por año, y
-#     luego promedio de los 7 años), no la mediana de las 210 combinaciones río-año.
 
 library(randomForest)
 library(parallel)
@@ -970,7 +959,7 @@ library(parallel)
 # 10.1. Configuración del clúster
 # ============================================================
 # Usamos min(nucleos - 1, 7) para usar como máximo 7 núcleos
-# uno por cada ventana y no sobrecargar.
+# uno por cada ventana y no sobrecargar
 n_cores <- min(detectCores() - 1, 7)
 
 cat("\n>>> Iniciando Random Forest con", n_cores, "núcleos en paralelo...\n")
@@ -989,11 +978,11 @@ vars_rf <- c("cambio_hoy", "log_Q",
 "temp_7d", "cuenca", "mes","Temp")
 
 # Filas sin NA en la respuesta ni en los predictores (RF no maneja NA).
-# Columna PROPIA de M3, para no cambiar datos$usable, que usan M1 y M2. Son las mismas filas.
+# Columna PROPIA de M3, ya que M1 y M2 los necesitan para no cambiar datos$usable, que usan M1 y M2. Son las mismas filas.
 datos$usable_rf <- !is.na(datos$Q) & !is.na(datos$Q_manana) & !is.na(datos$Q_ayer) &
   complete.cases(datos[, vars_rf])
 
-# LA BÚSQUEDA: 6 configuraciones, fijadas antes de ajustar (máximo sugerido: 20)
+# En la busqueda de hiperparametros usamos 6 configuraciones, fijadas antes de ajustar (máximo sugerido: 20)
 #   mtry     = cuántos predictores se sortean en cada corte (de 11): 2, 3 (= p/3) o 5
 #   nodesize = tamaño mínimo de las hojas: 5 (árbol profundo, por defecto) o 25 (más simple)
 configs_rf <- expand.grid(mtry = c(2, 3, 5), nodesize = c(5, 25))
@@ -1001,7 +990,9 @@ configs_rf$config <- paste0("mtry", configs_rf$mtry, "_nodo", configs_rf$nodesiz
 configs_rf
 n_arboles  <- 200     # árboles por bosque
 tam_submue <- 20000   # filas con que se entrena cada árbol (sampsize)
-
+# Cada árbol usará 20.000 filas en lugar de las 129.000. Esto es correcto ya que 
+# random forest ya usa muestras bootstrap, es decir aleatorias. Y al tener 200 árboles,
+# se ven casi todos los datos, pero es 10 veces más rápido.
 mae  <- function(y, yhat) mean(abs(y - yhat), na.rm = TRUE)
 rmse <- function(y, yhat) sqrt(mean((y - yhat)^2, na.rm = TRUE))
 
@@ -1025,11 +1016,12 @@ correr_ventana <- function(anio) {
   # Convertimos a factor para que el RF no asuma un orden numerico
   # es decir si los dejamos como números, el modelo asumiría que la cuenca
   # 8130002 es mayor que la 7116001, lo cual es incorrecto.
-  # (mismos niveles en entrenamiento y validación, para que predict() no falle)
+  # usamos levels para asegurar que train y valid tengan las mismas categorias
+  # y con esto predict() no falle
   train$cuenca <- factor(train$cuenca); valid$cuenca <- factor(valid$cuenca, levels = levels(train$cuenca))
   train$mes    <- factor(train$mes);    valid$mes    <- factor(valid$mes,    levels = levels(train$mes))
 
-  res <- data.frame()
+  res <- data.frame()#bucle para las 6 configuraciones de hiperparametros (mtry y nodesize)
   for (j in seq_len(nrow(configs_rf))) {
     set.seed(3407)
     rf_fit <- randomForest(
@@ -1093,15 +1085,27 @@ resultados_rf$mejora_RMSE <- 1 - resultados_rf$RMSE_rf / resultados_rf$RMSE_pers
 
 cat("\nTERMINADO. Tiempo total:", round(tiempo_global, 1), "minutos\n\n")
 
-# misma agregación que M1 y M2: mediana entre ríos por año, luego promedio de los 7 años
+# misma agregación que M1 y M2: mediana entre ríos por año, luego promediamos los 7 años
+#asi cada año pesa lo mismo y no se ve afectado por ríos con más días de validación
 por_anio_rf <- aggregate(cbind(mejora_MAE, mejora_RMSE) ~ anio + config, data = resultados_rf, FUN = median)
 tabla_rf <- aggregate(cbind(mejora_MAE, mejora_RMSE) ~ config, data = por_anio_rf, FUN = mean)
 tabla_rf <- tabla_rf[order(-tabla_rf$mejora_MAE), ]
 tabla_rf[, 2:3] <- round(tabla_rf[, 2:3], 3)
 tabla_rf                                  # la tabla que justifica la elección
+#Resultados de la salida:
+#         config mejora_MAE mejora_RMSE
+# 6  mtry5_nodo5      0.366       0.306   <- ¡El mejor!
+# 4  mtry3_nodo5      0.358       0.291
+# 5 mtry5_nodo25      0.355       0.296
+# ...
+# -> Significado: La configuración `mtry5_nodo5` logró un 36.6% de mejora en MAE.
+# -> Por qué gana: Usar 5 predictores por nodo (casi la mitad de los 11) y 
+#    hojas pequeñas (5 días) le da al bosque la flexibilidad justa para captar
+#    la complejidad sin sobreajustar.
 
-# misma regla de selección que M1 y M2: mayor mejora en MAE; si la diferencia con la
-# siguiente es menor que 0,5 puntos (0.005), desempata la mejora en RMSE.
+
+# misma regla de selección que en M1 y M2. Observamos la mayor mejora en MAE; si la diferencia con la
+# siguiente es menor que 0,5 puntos (0.005), desempata la mejora en RMSE que castiga mas a los errores extremos
 empatadas <- tabla_rf[tabla_rf$mejora_MAE >= tabla_rf$mejora_MAE[1] - 0.005, ]
 ganador_rf <- empatadas[which.max(empatadas$mejora_RMSE), ]
 cat("M3 ganador:", ganador_rf$config, "| mejora MAE:", ganador_rf$mejora_MAE,
@@ -1117,7 +1121,7 @@ round(resumen_rf, 3)
 # 10.6. Importancia de Variables y número de árboles (con todo el desarrollo)
 # ============================================================
 # reentrenamos el ganador con todo el desarrollo (2000-2012) para ver qué variables pesan más.
-# %IncMSE = cuánto aumenta el error de predicción si se permuta la variable.
+# %IncMSE = cuánto aumenta el error de predicción si quitamos la variable.
 cat("\n=== IMPORTANCIA DE VARIABLES (RF) ===\n")
 train_full <- subset(datos, usable_rf & fecha <= as.Date("2012-12-30"))
 train_full$cuenca <- factor(train_full$cuenca)
@@ -1144,10 +1148,10 @@ plot(rf_full, main = "Error OOB según número de árboles")
 # ============================================================
 # 10.5b. AMPLIACIÓN DE LA BÚSQUEDA: mtry = 8 con nodesize = 5
 # ============================================================
-# Motivo (resultado de desarrollo): el ganador (mtry 5, nodesize 5) quedó en el borde de la
+# Justificacion: el ganador (mtry 5, nodesize 5) quedó en el borde de la
 # grilla (mtry 5 era el mayor probado). Probamos UNA configuración más (7 de las 20 permitidas),
 # con las mismas ventanas, filas, árboles, submuestra y regla de selección.
-# Solo se corre la configuración nueva (~3 min), no las 6 anteriores.
+# Solo se corre la configuración nueva, no las 6 anteriores.
 configs_extra <- data.frame(mtry = 8, nodesize = 5, config = "mtry8_nodo5")
 
 cl <- makeCluster(n_cores)
@@ -1173,24 +1177,70 @@ tabla_rf <- tabla_rf[order(-tabla_rf$mejora_MAE), ]
 tabla_rf[, 2:3] <- round(tabla_rf[, 2:3], 3)
 tabla_rf                                  # ahora con 7 configuraciones
 
+# Salida:
+#         config mejora_MAE mejora_RMSE
+# 6  mtry5_nodo5      0.366       0.306  <- Mismo MAE que antes
+# 7  mtry8_nodo5      0.361       0.309  <- Nuevo Mejor RMSE (0.309), pero MAE cae un poco.
+# 4  mtry3_nodo5      0.358       0.291
+# Significado: mtry8 empató técnicamente con `mtry5` en MAE (diferencia 0.005).
+# ¿Por qué bajó el MAE? Porque 8 de 11 predictores (73%) hace que los árboles 
+# sean muy parecidos entre sí (pierden diversidad, que es la gracia del Bagging).
+
+
 empatadas <- tabla_rf[tabla_rf$mejora_MAE >= tabla_rf$mejora_MAE[1] - 0.005, ]
 ganador_rf <- empatadas[which.max(empatadas$mejora_RMSE), ]
 cat("M3 ganador con la búsqueda ampliada:", ganador_rf$config, "| mejora MAE:", ganador_rf$mejora_MAE,
     "| mejora RMSE:", ganador_rf$mejora_RMSE, "\n")
 
-# comparación año a año entre mtry 5 y mtry 8 (ambos con nodesize 5)
+# comparamos año a año entre mtry 5 y mtry 8 ambos con nodesize 5
 comparacion_mtry <- merge(subset(por_anio_rf, config == "mtry5_nodo5"),
                           subset(por_anio_rf, config == "mtry8_nodo5"),
                           by = "anio", suffixes = c("_mtry5", "_mtry8"))
 round(comparacion_mtry[, c("anio", "mejora_MAE_mtry5", "mejora_MAE_mtry8",
                            "mejora_RMSE_mtry5", "mejora_RMSE_mtry8")], 3)
+# Salida:
+#   anio mejora_MAE_mtry5 mejora_MAE_mtry8
+# 1 2006            0.409            0.407  (Empate)
+# 2 2007            0.309            0.285  (Gana mtry5 en año seco)
+# 3 2008            0.381            0.370  (Gana mtry5)
+# 4 2009            0.453            0.462  (Gana mtry8 en año lluvioso)
+# 5 2010            0.315            0.306  (Gana mtry5 en año seco)
+# ...
+# -> Significado: mtry5 es más estable en los años secos 2007 y 2010, 
+#    mientras que mtry8 sobresale en años lluviosos 2009. Como el test final 
+#    (2013-2016) es seco, tener un modelo estable en sequías es una ventaja.
 
-# el ganador, año por año (se recalcula por si cambió)
+# el ganador, año por año y recalculamos por si hubieron cambios
 resumen_rf <- subset(por_anio_rf, config == ganador_rf$config)[, c("anio", "mejora_MAE", "mejora_RMSE")]
 resumen_rf$rios_mejoran <- tapply(subset(resultados_rf, config == ganador_rf$config)$mejora_MAE > 0,
                                   subset(resultados_rf, config == ganador_rf$config)$anio, sum)
 round(resumen_rf, 3)
+<<<<<<< HEAD
 
 
 # BLOQUES 11 A 16: comparación, prueba final, incertidumbre, diagnóstico y sensibilidades
 source("bloques_11_16.R")
+=======
+# Salida:
+#    anio mejora_MAE mejora_RMSE rios_mejoran
+# 43 2006      0.407       0.363           30
+# 44 2007      0.285       0.277           27
+# 45 2008      0.370       0.267           29
+# 46 2009      0.462       0.382           29
+# 47 2010      0.306       0.284           27
+# 48 2011      0.363       0.324           27
+# 49 2012      0.335       0.269           28
+
+# EXPLICACIÓN COLUMNA POR COLUMNA:
+# 1. mejora_MAE: Es la mediana de mejora en los 30 ríos para ese año
+#    - En 2009 (año lluvioso), el modelo redujo el error un 46.2%
+#    - En 2007 (año muy seco), el modelo redujo el error un 28.5%
+
+# 2. mejora_RMSE: La mejora en los errores grandes (crecidas)
+#    Se mantiene muy estable entre 26.7% y 38.2%.
+
+# 3. rios_mejoran: ¿En cuántos de los 30 rios el modelo le ganó a persistencia?
+#    - En 2006, le ganó a todos los rios (30/30)
+#    - En los años 2007, 2010 y 2011, le ganó a 27 de 30
+#    - Nunca bajo de 27. Esto demuestra una gran consistencia
+>>>>>>> 8784aac6a358ebafc578bccbbdc958aa4192ec26
