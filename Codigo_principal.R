@@ -755,7 +755,198 @@ cat("M1 ganador:", ganador$tipo, "lambda =", ganador$lambda,
 round(subset(por_anio, tipo == ganador$tipo & lambda == ganador$lambda)[, c("anio", "mejora_MAE", "mejora_RMSE")], 3)
 
 
-#BLOQUE 9 MODELOS M3: Random Forest
+
+
+# BLOQUE 9. M2: MODELO ADITIVO GENERALIZADO (GAM) #
+# M2 es el procedimiento "flexible" que piden las instrucciones. Usamos un GAM:
+# cada predictor continuo entra como una curva suave f(x) en vez de una recta,
+#   f(x) = theta_1 b_1(x) + ... + theta_k b_k(x)        (k funciones base, clase S14-S15)
+# y cada curva paga un castigo por curvatura; la intensidad del castigo (lambda) la
+# elige REML dentro de cada entrenamiento. Lo que validamos es k y la estructura.
+#
+# Usa la MISMA información que M1 y M3 (cambio_hoy, log_Q, 5 lluvias, Temp, temp_7d,
+# mes y cuenca), las MISMAS filas (base_m1, del bloque 8), las MISMAS 7 ventanas y la
+# MISMA regla de selección que M1, para que la comparación sea pareada.
+
+library(mgcv)   # gam / bam: modelos aditivos con castigo y REML
+
+# 9.1 LOS 3 MODELOS, CADA UNO CON k = 5 Y k = 10 (6 configuraciones, fijadas ANTES de ajustar)
+# Como m3, m4 y m6, los 3 modelos se diferencian en qué tiene cada río de propio:
+#   A: solo su intercepto (cuenca_f como factor)                         ~ m3 con curvas
+#   B: A + su propia curva de respuesta a la lluvia de hoy               ~ m4 parcial
+#   C: B + su propia curva de bajada (log_Q)                             ~ m4/m6
+# Todos tienen las mismas 9 curvas comunes: s(x) = curva suave de x.
+# k = flexibilidad máxima de cada curva común: 5 o 10 (10 = valor por defecto de mgcv).
+# Las curvas por río usan bs = "fs": una curva por río, castigadas hacia una forma común.
+# Base de todas las curvas: thin plate ("tp", por defecto): no hay nudos que elegir.
+# La lluvia va en log1p, como en M1. mes y cuenca_f son factores: entran como términos lineales.
+formulas_m2 <- list(
+  A_k5  = cambio_manana ~ cuenca_f + mes +
+    s(cambio_hoy, k = 5) + s(log_Q, k = 5) + s(log1p(P), k = 5) + s(log1p(P_ayer), k = 5) +
+    s(log1p(lluvia_3d), k = 5) + s(log1p(lluvia_7d), k = 5) + s(log1p(lluvia_30d), k = 5) +
+    s(Temp, k = 5) + s(temp_7d, k = 5),
+  A_k10 = cambio_manana ~ cuenca_f + mes +
+    s(cambio_hoy, k = 10) + s(log_Q, k = 10) + s(log1p(P), k = 10) + s(log1p(P_ayer), k = 10) +
+    s(log1p(lluvia_3d), k = 10) + s(log1p(lluvia_7d), k = 10) + s(log1p(lluvia_30d), k = 10) +
+    s(Temp, k = 10) + s(temp_7d, k = 10),
+  B_k5  = cambio_manana ~ cuenca_f + mes +
+    s(cambio_hoy, k = 5) + s(log_Q, k = 5) + s(log1p(P), k = 5) + s(log1p(P_ayer), k = 5) +
+    s(log1p(lluvia_3d), k = 5) + s(log1p(lluvia_7d), k = 5) + s(log1p(lluvia_30d), k = 5) +
+    s(Temp, k = 5) + s(temp_7d, k = 5) +
+    s(log1p(P), cuenca_f, bs = "fs", k = 5),
+  B_k10 = cambio_manana ~ cuenca_f + mes +
+    s(cambio_hoy, k = 10) + s(log_Q, k = 10) + s(log1p(P), k = 10) + s(log1p(P_ayer), k = 10) +
+    s(log1p(lluvia_3d), k = 10) + s(log1p(lluvia_7d), k = 10) + s(log1p(lluvia_30d), k = 10) +
+    s(Temp, k = 10) + s(temp_7d, k = 10) +
+    s(log1p(P), cuenca_f, bs = "fs", k = 5),
+  C_k5  = cambio_manana ~ cuenca_f + mes +
+    s(cambio_hoy, k = 5) + s(log_Q, k = 5) + s(log1p(P), k = 5) + s(log1p(P_ayer), k = 5) +
+    s(log1p(lluvia_3d), k = 5) + s(log1p(lluvia_7d), k = 5) + s(log1p(lluvia_30d), k = 5) +
+    s(Temp, k = 5) + s(temp_7d, k = 5) +
+    s(log1p(P), cuenca_f, bs = "fs", k = 5) + s(log_Q, cuenca_f, bs = "fs", k = 5),
+  C_k10 = cambio_manana ~ cuenca_f + mes +
+    s(cambio_hoy, k = 10) + s(log_Q, k = 10) + s(log1p(P), k = 10) + s(log1p(P_ayer), k = 10) +
+    s(log1p(lluvia_3d), k = 10) + s(log1p(lluvia_7d), k = 10) + s(log1p(lluvia_30d), k = 10) +
+    s(Temp, k = 10) + s(temp_7d, k = 10) +
+    s(log1p(P), cuenca_f, bs = "fs", k = 5) + s(log_Q, cuenca_f, bs = "fs", k = 5)
+)
+
+# 9.2 AJUSTE
+# bam: versión de gam para muchas filas. method = "fREML": lambda de cada curva por REML.
+# discrete = TRUE: redondea cada predictor a una grilla de valores para calcular las
+# bases una vez por valor (mucho más rápido; ~1 a 6 segundos por ajuste).
+# Las bases, el centrado y REML se calculan SOLO con las filas de entrenamiento (tr).
+# Aviso esperable en B y C: "model has repeated 1-d smooths of same variable", porque
+# s(log1p(P)) y s(log1p(P), cuenca_f, bs = "fs") usan la misma variable: la curva común
+# más la desviación de cada río. mgcv lo resuelve solo (gam.side) quitando lo que se repite.
+ajustar_m2 <- function(tr, formula) {
+  set.seed(3407)   # la base thin plate usa una submuestra aleatoria de valores de x
+  bam(formula, data = base_m1[tr, ], method = "fREML", discrete = TRUE)
+}
+
+# 9.3 LAS 6 CONFIGURACIONES EN LAS 7 VENTANAS (igual que M1 en el bloque 8)
+resultados_m2 <- data.frame()   # una fila por ventana, configuración y río
+for (anio_ext in 2006:2012) {
+  tr <- filas_entrena(anio_ext)
+  va <- filas_valida(anio_ext)
+  obs <- base_m1$Q_manana[va]; cu <- base_m1$cuenca[va]
+  for (nombre in names(formulas_m2)) {
+    modelo <- ajustar_m2(tr, formulas_m2[[nombre]])
+    pred_Q <- base_m1$Q[va] * exp(predict(modelo, newdata = base_m1[va, ]))   # deshacemos el log
+    resultados_m2 <- rbind(resultados_m2, data.frame(
+      anio = anio_ext, config = nombre,
+      cuenca = names(tapply(obs, cu, length)), dias = as.vector(tapply(obs, cu, length)),
+      MAE_m2    = as.vector(tapply(abs(pred_Q - obs), cu, mean)),
+      MAE_pers  = as.vector(tapply(abs(base_m1$Q[va] - obs), cu, mean)),
+      RMSE_m2   = as.vector(sqrt(tapply((pred_Q - obs)^2, cu, mean))),
+      RMSE_pers = as.vector(sqrt(tapply((base_m1$Q[va] - obs)^2, cu, mean)))))
+  }
+  cat("Listo", anio_ext, "\n")
+}
+resultados_m2$mejora_MAE  <- 1 - resultados_m2$MAE_m2  / resultados_m2$MAE_pers
+resultados_m2$mejora_RMSE <- 1 - resultados_m2$RMSE_m2 / resultados_m2$RMSE_pers
+
+# por año: mediana entre ríos; luego promedio de los 7 años (misma agregación que M1)
+por_anio_m2 <- aggregate(cbind(mejora_MAE, mejora_RMSE) ~ anio + config, data = resultados_m2, FUN = median)
+tabla_m2 <- aggregate(cbind(mejora_MAE, mejora_RMSE) ~ config, data = por_anio_m2, FUN = mean)
+tabla_m2 <- tabla_m2[order(-tabla_m2$mejora_MAE), ]
+tabla_m2[, 2:3] <- round(tabla_m2[, 2:3], 3)
+tabla_m2                                  # la tabla que justifica la elección
+
+# 9.4 REGLA DE SELECCIÓN (la misma de M1): mayor mejora en MAE; si la diferencia con la
+# siguiente es menor que 0,5 puntos (0.005), desempata la mejora en RMSE.
+empatadas <- tabla_m2[tabla_m2$mejora_MAE >= tabla_m2$mejora_MAE[1] - 0.005, ]
+ganador_m2 <- empatadas[which.max(empatadas$mejora_RMSE), ]
+cat("M2 ganador:", ganador_m2$config, "| mejora MAE:", ganador_m2$mejora_MAE,
+    "| mejora RMSE:", ganador_m2$mejora_RMSE, "\n")
+round(subset(por_anio_m2, config == ganador_m2$config)[, c("anio", "mejora_MAE", "mejora_RMSE")], 3)
+
+# 9.5 DIAGNÓSTICO DEL MODELO GANADOR (con todo el desarrollo: 2000 a 2012-12-30)
+# Solo para describir el modelo elegido (edf, curvas, concurvidad, k); no cambia la elección.
+m2_desarrollo <- ajustar_m2(filas_entrena(2013), formulas_m2[[ganador_m2$config]])
+
+# edf de cada curva: ~1 = casi recta; mayor = curva con más forma
+resumen_m2 <- summary(m2_desarrollo)
+round(resumen_m2$s.table[, "edf", drop = FALSE], 2)
+
+# ¿k alcanza? k-index bajo 1 con p-valor chico sugiere que la curva quedó "apretada"
+k.check(m2_desarrollo)
+
+# concurvidad: versión para curvas de la multicolinealidad (0 = nada, 1 = total).
+# Se mira "worst": cuánto puede reproducirse cada curva con las demás.
+round(concurvity(m2_desarrollo, full = TRUE)["worst", ], 2)
+
+# curvas parciales de las curvas comunes, con su banda (± 2 errores estándar)
+# (plot.gam dibuja una curva por llamada con select, así que se recorren las 9 comunes)
+par(mfrow = c(3, 3), mar = c(4, 4, 1, 1))
+for (i in 1:9) {
+  plot(m2_desarrollo, select = i, shade = TRUE, seWithMean = TRUE, rug = FALSE,
+       scale = 0,   # cada panel con su propia escala vertical (si no, las curvas chicas se ven planas)
+       ylab = "Aporte al cambio log (centrado)")
+  abline(h = 0, lty = 2)
+}
+par(mfrow = c(1, 1))
+
+# 9.6 AMPLIACIÓN DE LA BÚSQUEDA: C CON k = 15
+# Motivo (resultado de desarrollo): el ganador C_k10 es la configuración más flexible de
+# la grilla, y k.check muestra varias curvas comunes usando casi todo su k (edf ~8,9 de 9).
+# Probamos una configuración más (7 de las 20 permitidas) con las curvas comunes en k = 15.
+# Mismas ventanas, filas, métrica y regla de selección que el resto de M2.
+formula_C_k15 <- cambio_manana ~ cuenca_f + mes +
+  s(cambio_hoy, k = 15) + s(log_Q, k = 15) + s(log1p(P), k = 15) + s(log1p(P_ayer), k = 15) +
+  s(log1p(lluvia_3d), k = 15) + s(log1p(lluvia_7d), k = 15) + s(log1p(lluvia_30d), k = 15) +
+  s(Temp, k = 15) + s(temp_7d, k = 15) +
+  s(log1p(P), cuenca_f, bs = "fs", k = 5) + s(log_Q, cuenca_f, bs = "fs", k = 5)
+
+resultados_k15 <- data.frame()
+for (anio_ext in 2006:2012) {
+  tr <- filas_entrena(anio_ext)
+  va <- filas_valida(anio_ext)
+  obs <- base_m1$Q_manana[va]; cu <- base_m1$cuenca[va]
+  modelo <- ajustar_m2(tr, formula_C_k15)
+  pred_Q <- base_m1$Q[va] * exp(predict(modelo, newdata = base_m1[va, ]))
+  resultados_k15 <- rbind(resultados_k15, data.frame(
+    anio = anio_ext, config = "C_k15",
+    cuenca = names(tapply(obs, cu, length)), dias = as.vector(tapply(obs, cu, length)),
+    MAE_m2    = as.vector(tapply(abs(pred_Q - obs), cu, mean)),
+    MAE_pers  = as.vector(tapply(abs(base_m1$Q[va] - obs), cu, mean)),
+    RMSE_m2   = as.vector(sqrt(tapply((pred_Q - obs)^2, cu, mean))),
+    RMSE_pers = as.vector(sqrt(tapply((base_m1$Q[va] - obs)^2, cu, mean)))))
+  cat("Listo", anio_ext, "\n")
+}
+resultados_k15$mejora_MAE  <- 1 - resultados_k15$MAE_m2  / resultados_k15$MAE_pers
+resultados_k15$mejora_RMSE <- 1 - resultados_k15$RMSE_m2 / resultados_k15$RMSE_pers
+
+# comparación por año con C_k10 (misma agregación: mediana entre ríos por año)
+por_anio_k15 <- aggregate(cbind(mejora_MAE, mejora_RMSE) ~ anio + config, data = resultados_k15, FUN = median)
+comparacion_k <- merge(subset(por_anio_m2, config == "C_k10"), por_anio_k15,
+                       by = "anio", suffixes = c("_k10", "_k15"))
+comparacion_k <- comparacion_k[, c("anio", "mejora_MAE_k10", "mejora_MAE_k15", "mejora_RMSE_k10", "mejora_RMSE_k15")]
+round(comparacion_k, 3)
+round(colMeans(comparacion_k[, -1]), 3)   # promedio de los 7 años
+
+# misma regla de selección, ahora con las 7 configuraciones
+tabla_m2_ampliada <- rbind(tabla_m2, data.frame(config = "C_k15",
+  mejora_MAE  = round(mean(por_anio_k15$mejora_MAE), 3),
+  mejora_RMSE = round(mean(por_anio_k15$mejora_RMSE), 3)))
+tabla_m2_ampliada <- tabla_m2_ampliada[order(-tabla_m2_ampliada$mejora_MAE), ]
+tabla_m2_ampliada
+empatadas <- tabla_m2_ampliada[tabla_m2_ampliada$mejora_MAE >= tabla_m2_ampliada$mejora_MAE[1] - 0.005, ]
+ganador_m2 <- empatadas[which.max(empatadas$mejora_RMSE), ]
+cat("M2 ganador con la búsqueda ampliada:", ganador_m2$config, "\n")
+
+# ¿k = 15 alcanza? (ajuste con todo el desarrollo)
+m2_k15 <- ajustar_m2(filas_entrena(2013), formula_C_k15)
+k.check(m2_k15)
+
+
+
+
+
+
+
+
+#BLOQUE 10 MODELOS M3: Random Forest
 # ============================================================
 #M3: RANDOM FOREST PARALELIZADO (7 NÚCLEOS DEL CPU 1 PARA CADA VENTANA)
 # ============================================================
@@ -771,7 +962,7 @@ library(randomForest)
 library(parallel)
 
 # ============================================================
-# 9.1. Configuración del clúster
+# 10.1. Configuración del clúster
 # ============================================================
 # Usamos min(nucleos - 1, 7) para usar como máximo 7 núcleos
 # uno por cada ventana y no sobrecargar.
@@ -784,7 +975,7 @@ cat(">>> se vera el progreso de cada ventana cuando vayan terminando.\n\n")
 cl <- makeCluster(n_cores)
 
 # ============================================================
-# 9.2. Exportar datos y funciones a los núcleos
+# 10.2. Exportar datos y funciones a los núcleos
 # ============================================================
 # Definimos vars_rf para asegurarnos de que existe la variable antes de llevarla a los nucleos
 #RF maneja bien la multicolinealidad por ej en temp y temp_7d
@@ -814,7 +1005,7 @@ clusterExport(cl, c("datos", "vars_rf", "mae", "rmse"))
 clusterEvalQ(cl, library(randomForest))
 
 # ============================================================
-# 9.3. Función que corre UNA ventana
+# 10.3. Función que corre UNA ventana
 # ============================================================
 correr_ventana <- function(anio) {
   
@@ -883,7 +1074,7 @@ correr_ventana <- function(anio) {
 }
 
 # ============================================================
-# 9.4. Ejecutar en paralelo esto se demora
+# 10.4. Ejecutar en paralelo esto se demora
 # ============================================================
 # parLapply va a repartir las 7 ventanas entre los núcleos al mismo tiempo
 t0_global <- Sys.time()
@@ -894,7 +1085,7 @@ tiempo_global <- difftime(Sys.time(), t0_global, units = "mins")
 stopCluster(cl)
 
 # ============================================================
-# 9.5. Resultados y calcular mejoras
+# 10.5. Resultados y calcular mejoras
 # ============================================================
 resultados_rf <- do.call(rbind, resultados_lista)
 # la formula para medir la mejora es la misma que usamos en los bloques anteriores
@@ -934,7 +1125,7 @@ cat("RMSE mediana (7 ventanas):", round(median(resultados_rf$mejora_RMSE), 3), "
 # es grande, el modelo también reduce el error en un 30.6%.
 
 # ============================================================
-# 9.6. Importancia de Variables (con todo el entrenamiento)
+# 10.6. Importancia de Variables (con todo el entrenamiento)
 # ============================================================
 # para ver que variables son las mas importantes reentrenamos el modelo con todos los datos de entrenamiento (2000-2012)
 # nos va a entregar %IncMSE que nos dice cuanto aumenta el error de prediccion si quitas la variable 
@@ -987,3 +1178,6 @@ varImpPlot(rf_full, main = "Importancia de variables (50 árboles)")
 #    borras, el modelo no muere porque compensa con otras variables.
 # 3. `cambio_hoy` (661.76): Muy usado para cortar, consistente con su 
 #    alta importancia predictiva.
+
+
+
