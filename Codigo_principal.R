@@ -942,21 +942,26 @@ k.check(m2_k15)
 
 
 
-
-
-
-
 #BLOQUE 10 MODELOS M3: Random Forest
 # ============================================================
 #M3: RANDOM FOREST PARALELIZADO (7 NÚCLEOS DEL CPU 1 PARA CADA VENTANA)
 # ============================================================
-# 
+#
 # Usamos `parallel` para realizar las 7 ventanas al mismo tiempo de manera independiente
 # así que paralelizamos el loop de ventanas.
-# Con 50 árboles por ventana,
-# esto debería tomar ~1h en total.
+# queremos predecir: cambio_manana (log-cambio), igual que M1 y M2.
 #
-# queremos predecir: cambio_manana (log-cambio).
+# CAMBIOS RESPECTO DE LA PRIMERA VERSIÓN:
+#  1) Búsqueda de hiperparámetros (las instrucciones la exigen): 6 configuraciones
+#     (mtry x nodesize), evaluadas en las mismas 7 ventanas y con la misma regla que M1 y M2.
+#  2) Cada árbol se entrena con una submuestra de 20 000 filas (sampsize). Con las ~129 000
+#     filas completas cada árbol tardaba ~17 segundos (50 árboles ~ 14 min por ventana);
+#     con la submuestra tarda 0,1 a 0,3 segundos. La submuestra es parte normal de un
+#     bosque aleatorio: cada árbol ya usaba una muestra bootstrap distinta.
+#  3) Con eso alcanza para 200 árboles en vez de 50.
+#  4) Ya no se sobrescribe datos$usable (lo usan M1 y M2): se crea datos$usable_rf.
+#  5) El resumen usa la misma agregación que M1 y M2 (mediana entre ríos por año, y
+#     luego promedio de los 7 años), no la mediana de las 210 combinaciones río-año.
 
 library(randomForest)
 library(parallel)
@@ -969,13 +974,13 @@ library(parallel)
 n_cores <- min(detectCores() - 1, 7)
 
 cat("\n>>> Iniciando Random Forest con", n_cores, "núcleos en paralelo...\n")
-cat(">>> Tiempo estimado: ~1h en total.\n")
+cat(">>> Tiempo estimado: ~10 min en total (6 configuraciones x 7 ventanas).\n")
 cat(">>> se vera el progreso de cada ventana cuando vayan terminando.\n\n")
 
 cl <- makeCluster(n_cores)
 
 # ============================================================
-# 10.2. Exportar datos y funciones a los núcleos
+# 10.2. Exportar datos, configuraciones y funciones a los núcleos
 # ============================================================
 # Definimos vars_rf para asegurarnos de que existe la variable antes de llevarla a los nucleos
 #RF maneja bien la multicolinealidad por ej en temp y temp_7d
@@ -983,98 +988,91 @@ vars_rf <- c("cambio_hoy", "log_Q",
 "P", "P_ayer", "lluvia_3d", "lluvia_7d", "lluvia_30d",
 "temp_7d", "cuenca", "mes","Temp")
 
-# Redefinir la variable usable con los predictores viendo que no tengamos NA en ninguno de estos ya que RF no los maneja
-datos$usable <- !is.na(datos$Q) &
-  !is.na(datos$Q_manana) &
-  !is.na(datos$Q_ayer) &
-  !is.na(datos$P) &
-  !is.na(datos$P_ayer) &
-  !is.na(datos$lluvia_3d) &
-  !is.na(datos$lluvia_7d) &
-  !is.na(datos$lluvia_30d) &
-  !is.na(datos$temp_7d) &
-  !is.na(datos$cuenca) &
-  !is.na(datos$mes) &
-  !is.na(datos$Temp)
+# Filas sin NA en la respuesta ni en los predictores (RF no maneja NA).
+# Columna PROPIA de M3, para no cambiar datos$usable, que usan M1 y M2. Son las mismas filas.
+datos$usable_rf <- !is.na(datos$Q) & !is.na(datos$Q_manana) & !is.na(datos$Q_ayer) &
+  complete.cases(datos[, vars_rf])
+
+# LA BÚSQUEDA: 6 configuraciones, fijadas antes de ajustar (máximo sugerido: 20)
+#   mtry     = cuántos predictores se sortean en cada corte (de 11): 2, 3 (= p/3) o 5
+#   nodesize = tamaño mínimo de las hojas: 5 (árbol profundo, por defecto) o 25 (más simple)
+configs_rf <- expand.grid(mtry = c(2, 3, 5), nodesize = c(5, 25))
+configs_rf$config <- paste0("mtry", configs_rf$mtry, "_nodo", configs_rf$nodesize)
+configs_rf
+n_arboles  <- 200     # árboles por bosque
+tam_submue <- 20000   # filas con que se entrena cada árbol (sampsize)
 
 mae  <- function(y, yhat) mean(abs(y - yhat), na.rm = TRUE)
 rmse <- function(y, yhat) sqrt(mean((y - yhat)^2, na.rm = TRUE))
 
-# enviamos los datos y las funciones a los 7 nucleos
-clusterExport(cl, c("datos", "vars_rf", "mae", "rmse"))
+# enviamos los datos, la búsqueda y las funciones a los 7 nucleos
+clusterExport(cl, c("datos", "vars_rf", "configs_rf", "n_arboles", "tam_submue", "mae", "rmse"))
 clusterEvalQ(cl, library(randomForest))
 
 # ============================================================
-# 10.3. Función que corre UNA ventana
+# 10.3. Función que corre UNA ventana (con las 6 configuraciones)
 # ============================================================
 correr_ventana <- function(anio) {
-  
+
   t0 <- Sys.time()
-  
+
   # particion temporal entrenamos con el pasado y validamos con el año actual
   # entrenamos hasta el 30-12 del año anterior y validamos con el año completo
-  train <- subset(datos, usable & fecha <= as.Date(paste0(anio - 1, "-12-30")))
-  valid <- subset(datos, usable & fecha >= as.Date(paste0(anio, "-01-01")) &
+  train <- subset(datos, usable_rf & fecha <= as.Date(paste0(anio - 1, "-12-30")))
+  valid <- subset(datos, usable_rf & fecha >= as.Date(paste0(anio, "-01-01")) &
   fecha <= as.Date(paste0(anio, "-12-30")))
-  
-  # limpiamos na por si acaso
-  train <- train[!is.na(train$cambio_manana), ]
-  valid <- valid[!is.na(valid$cambio_manana), ]
-  
+
   # Convertimos a factor para que el RF no asuma un orden numerico
-  # es decir si los dejamos como números, el modelo asumiría que la cuenca 
+  # es decir si los dejamos como números, el modelo asumiría que la cuenca
   # 8130002 es mayor que la 7116001, lo cual es incorrecto.
-  train$cuenca <- factor(train$cuenca)
-  valid$cuenca <- factor(valid$cuenca)
-  train$mes    <- factor(train$mes)
-  valid$mes    <- factor(valid$mes)
-  
-  # Ajustar modelo con 50 árboles
-  # mtry p/3 reparte 1/3 de los predictores a cada árbol, lo cual es un buen valor por defecto
-  #importance = TRUE nos permite observar la importancia de cada variable en el modelo
-  set.seed(3407)
-  rf_fit <- randomForest(
-    x = train[, vars_rf],
-    y = train$cambio_manana,
-    ntree = 50,
-    mtry  = max(1, floor(length(vars_rf) / 3)),
-    importance = TRUE
-  )
-  
-  # Predecir y deshacer el log
-  # el modelo predice el cambio porcentual por lo que para volver a m3/s
-  # multiplicamos el caudal de hoy por el exp del cambio y deshacemos el log
-  pred_rf_log <- predict(rf_fit, newdata = valid[, vars_rf])
-  pred_rf     <- valid$Q * exp(pred_rf_log)
-  pred_pers   <- valid$Q
-  
-  # Métricas por río
-  # MAE y RMSE la mediana luego va a evitar que los rios grandes distorsionen los resultados
+  # (mismos niveles en entrenamiento y validación, para que predict() no falle)
+  train$cuenca <- factor(train$cuenca); valid$cuenca <- factor(valid$cuenca, levels = levels(train$cuenca))
+  train$mes    <- factor(train$mes);    valid$mes    <- factor(valid$mes,    levels = levels(train$mes))
+
   res <- data.frame()
-  for (cu in unique(valid$cuenca)) {
-    i <- which(valid$cuenca == cu)
-    d_y <- valid$Q_manana[i]
-    res <- rbind(res, data.frame(
-      anio      = anio,
-      cuenca    = cu,
-      dias      = length(i),
-      MAE_pers  = mae(d_y, pred_pers[i]),
-      MAE_rf    = mae(d_y, pred_rf[i]),
-      RMSE_pers = rmse(d_y, pred_pers[i]),
-      RMSE_rf   = rmse(d_y, pred_rf[i])
-    ))
+  for (j in seq_len(nrow(configs_rf))) {
+    set.seed(3407)
+    rf_fit <- randomForest(
+      x = train[, vars_rf],
+      y = train$cambio_manana,
+      ntree    = n_arboles,
+      mtry     = configs_rf$mtry[j],
+      nodesize = configs_rf$nodesize[j],
+      sampsize = tam_submue
+    )
+
+    # Predecir y deshacer el log
+    # el modelo predice el cambio porcentual por lo que para volver a m3/s
+    # multiplicamos el caudal de hoy por el exp del cambio y deshacemos el log
+    pred_rf   <- valid$Q * exp(predict(rf_fit, newdata = valid[, vars_rf]))
+    pred_pers <- valid$Q
+
+    # Métricas por río
+    for (cu in unique(valid$cuenca)) {
+      i <- which(valid$cuenca == cu)
+      d_y <- valid$Q_manana[i]
+      res <- rbind(res, data.frame(
+        anio      = anio,
+        config    = configs_rf$config[j],
+        cuenca    = as.character(cu),
+        dias      = length(i),
+        MAE_pers  = mae(d_y, pred_pers[i]),
+        MAE_rf    = mae(d_y, pred_rf[i]),
+        RMSE_pers = rmse(d_y, pred_pers[i]),
+        RMSE_rf   = rmse(d_y, pred_rf[i])
+      ))
+    }
   }
-  
+
   # Imprimir estado de la ventana
   tiempo <- difftime(Sys.time(), t0, units = "mins")
-  cat("✅ Listo", anio, "| Tiempo:", round(tiempo, 2), "min | OOB RMSE:", 
-      round(sqrt(tail(rf_fit$mse, 1)), 4), "\n")
-  
+  cat("Listo", anio, "| Tiempo:", round(tiempo, 2), "min\n")
+
   return(res)
 }
 
 # ============================================================
-# 10.4. Ejecutar en paralelo esto se demora
+# 10.4. Ejecutar en paralelo
 # ============================================================
 # parLapply va a repartir las 7 ventanas entre los núcleos al mismo tiempo
 t0_global <- Sys.time()
@@ -1085,7 +1083,7 @@ tiempo_global <- difftime(Sys.time(), t0_global, units = "mins")
 stopCluster(cl)
 
 # ============================================================
-# 10.5. Resultados y calcular mejoras
+# 10.5. Resultados, mejoras y elección de la configuración
 # ============================================================
 resultados_rf <- do.call(rbind, resultados_lista)
 # la formula para medir la mejora es la misma que usamos en los bloques anteriores
@@ -1093,91 +1091,102 @@ resultados_rf <- do.call(rbind, resultados_lista)
 resultados_rf$mejora_MAE  <- 1 - resultados_rf$MAE_rf  / resultados_rf$MAE_pers
 resultados_rf$mejora_RMSE <- 1 - resultados_rf$RMSE_rf / resultados_rf$RMSE_pers
 
-cat("\n========================================\n")
-cat("¡TERMINADO! Tiempo total:", round(tiempo_global, 1), "minutos\n")
-cat("========================================\n\n")
+cat("\nTERMINADO. Tiempo total:", round(tiempo_global, 1), "minutos\n\n")
 
-# Resumen por año
-cat("=== MEJORA MEDIANA POR AÑO (RF) ===\n")
-resumen_rf <- data.frame(
-  anio = 2006:2012,
-  MAE_mediana  = tapply(resultados_rf$mejora_MAE,  resultados_rf$anio, median),
-  RMSE_mediana = tapply(resultados_rf$mejora_RMSE, resultados_rf$anio, median),
-  rios_mejoran = tapply(resultados_rf$mejora_MAE > 0, resultados_rf$anio, sum)
-)
-print(resumen_rf, row.names = FALSE)
+# misma agregación que M1 y M2: mediana entre ríos por año, luego promedio de los 7 años
+por_anio_rf <- aggregate(cbind(mejora_MAE, mejora_RMSE) ~ anio + config, data = resultados_rf, FUN = median)
+tabla_rf <- aggregate(cbind(mejora_MAE, mejora_RMSE) ~ config, data = por_anio_rf, FUN = mean)
+tabla_rf <- tabla_rf[order(-tabla_rf$mejora_MAE), ]
+tabla_rf[, 2:3] <- round(tabla_rf[, 2:3], 3)
+tabla_rf                                  # la tabla que justifica la elección
 
-# Resumen global
-cat("\n=== RESUMEN GLOBAL RF ===\n")
-cat("MAE mediana  (7 ventanas):", round(median(resultados_rf$mejora_MAE), 3), "\n")
-cat("RMSE mediana (7 ventanas):", round(median(resultados_rf$mejora_RMSE), 3), "\n")
-#RESULTADOS: 
-#EXPLICACIÓN DE LA TABLA:
-# Se observa que la mejora en MAE va del 31.2% en el año más seco, 2010
-# al 44.7% en 2009. Esto demuestra una ESTABILIDAD ENORME. 
-# En los 7 años, el modelo le gana a persistencia en al menos 27 de los 30 ríos.
-# En los años 2006 y 2008, le gana a TODOS los ríos.
-# EXPLICACIÓN DEL RESULTADO GLOBAL:
-# MAE: 36.1%. Significa que en el río típico random forest va a reducir 
-# el error en  un 36.1% comparado con decir "mañana igual que hoy". 
-# Recordando que en m4 solo obteniamos un 12.5%.
-# RMSE: 30.6%. Significa que en los días de crecidas donde tenemos que el error 
-# es grande, el modelo también reduce el error en un 30.6%.
+# misma regla de selección que M1 y M2: mayor mejora en MAE; si la diferencia con la
+# siguiente es menor que 0,5 puntos (0.005), desempata la mejora en RMSE.
+empatadas <- tabla_rf[tabla_rf$mejora_MAE >= tabla_rf$mejora_MAE[1] - 0.005, ]
+ganador_rf <- empatadas[which.max(empatadas$mejora_RMSE), ]
+cat("M3 ganador:", ganador_rf$config, "| mejora MAE:", ganador_rf$mejora_MAE,
+    "| mejora RMSE:", ganador_rf$mejora_RMSE, "\n")
+
+# el ganador, año por año (y en cuántos ríos le gana a persistencia)
+resumen_rf <- subset(por_anio_rf, config == ganador_rf$config)[, c("anio", "mejora_MAE", "mejora_RMSE")]
+resumen_rf$rios_mejoran <- tapply(subset(resultados_rf, config == ganador_rf$config)$mejora_MAE > 0,
+                                  subset(resultados_rf, config == ganador_rf$config)$anio, sum)
+round(resumen_rf, 3)
 
 # ============================================================
-# 10.6. Importancia de Variables (con todo el entrenamiento)
+# 10.6. Importancia de Variables y número de árboles (con todo el desarrollo)
 # ============================================================
-# para ver que variables son las mas importantes reentrenamos el modelo con todos los datos de entrenamiento (2000-2012)
-# nos va a entregar %IncMSE que nos dice cuanto aumenta el error de prediccion si quitas la variable 
+# reentrenamos el ganador con todo el desarrollo (2000-2012) para ver qué variables pesan más.
+# %IncMSE = cuánto aumenta el error de predicción si se permuta la variable.
 cat("\n=== IMPORTANCIA DE VARIABLES (RF) ===\n")
-train_full <- subset(datos, usable & fecha <= as.Date("2012-12-30"))
-train_full <- train_full[!is.na(train_full$cambio_manana), ]
+train_full <- subset(datos, usable_rf & fecha <= as.Date("2012-12-30"))
 train_full$cuenca <- factor(train_full$cuenca)
 train_full$mes    <- factor(train_full$mes)
+cfg <- configs_rf[configs_rf$config == ganador_rf$config, ]
 
 set.seed(3407)
 rf_full <- randomForest(
   x = train_full[, vars_rf],
   y = train_full$cambio_manana,
-  ntree = 50,
-  mtry  = max(1, floor(length(vars_rf) / 3)),
+  ntree    = n_arboles,
+  mtry     = cfg$mtry,
+  nodesize = cfg$nodesize,
+  sampsize = tam_submue,
   importance = TRUE
 )
 
 print(round(importance(rf_full), 2))
-varImpPlot(rf_full, main = "Importancia de variables (50 árboles)")
-# EXPLICACIÓN DEL GRÁFICO DE IMPORTANCIA (varImpPlot)
+varImpPlot(rf_full, main = paste("Importancia de variables (", n_arboles, "árboles)"))
+
+# ¿alcanzan los árboles? el error OOB debe quedar plano antes de llegar a n_arboles
+plot(rf_full, main = "Error OOB según número de árboles")
+
 # ============================================================
-# El gráfico tiene dos paneles. Cada uno 
-# responde una pregunta distinta sobre las variables:
+# 10.5b. AMPLIACIÓN DE LA BÚSQUEDA: mtry = 8 con nodesize = 5
+# ============================================================
+# Motivo (resultado de desarrollo): el ganador (mtry 5, nodesize 5) quedó en el borde de la
+# grilla (mtry 5 era el mayor probado). Probamos UNA configuración más (7 de las 20 permitidas),
+# con las mismas ventanas, filas, árboles, submuestra y regla de selección.
+# Solo se corre la configuración nueva (~3 min), no las 6 anteriores.
+configs_extra <- data.frame(mtry = 8, nodesize = 5, config = "mtry8_nodo5")
 
-# PANEL IZQUIERDO: %IncMSE El "¿Qué pasa si pierdo la pista?"
-# Mide cuánto empeora el error del modelo si destruimos/permutamos 
-# esa variable. Es la medida más importante de PODER PREDICTIVO.
-# Resultados:
-# 1. `cambio_hoy` (24.76%): Si le ocultamos al modelo si el 
-#    río venía subiendo o bajando, el error se dispara. Es la memoria inmediata.
-# 2. `lluvia_30d` (16.04%): La lluvia del último mes (saturación del suelo) 
-#    es más importante que la lluvia de hoy (`P`, 14.06%). 
-# 3. `mes` (14.45%) y `cuenca` (13.93%): La estacionalidad y la identidad 
-#    del río también son claves.
-# 4. `Temp` (6.92%): La temperatura de hoy aporta poco de forma aislada 
-#    porque su efecto (deshielo) ya está capturado por `temp_7d` (11.61%).
+cl <- makeCluster(n_cores)
+clusterExport(cl, c("datos", "vars_rf", "n_arboles", "tam_submue", "mae", "rmse"))
+clusterEvalQ(cl, library(randomForest))
 
-#PANEL DERECHO: IncNodePurity El "¿Cuántas reglas construiste?"
-# Mide la reducción de impureza (varianza) que logra la variable en los 
-# nodos de los árboles. Es decir, cuánto usa el árbol esa variable para 
-# hacer cortes y separar los datos.
-# Resultados:
-# 1. `P` (1878.02): El modelo usa la lluvia de hoy hasta el cansancio 
-#    para hacer divisiones (ej. "¿Llueve más de 5mm? Sí/No").
-# 2. `cuenca` (749.93): ¡Ojo aquí! Aunque en el panel izquierdo tiene 
-#    un % bajo (13.9%), aquí es la segunda más alta. El árbol usa el código 
-#    del río CONSTANTEMENTE para personalizar las reglas (ej. "Si es San 
-#    Pedro, haz esto; si es Maule, haz esto otro"). Sin embargo, si la 
-#    borras, el modelo no muere porque compensa con otras variables.
-# 3. `cambio_hoy` (661.76): Muy usado para cortar, consistente con su 
-#    alta importancia predictiva.
+# correr_ventana usa configs_rf: le pasamos temporalmente solo la configuración nueva
+configs_rf_original <- configs_rf
+configs_rf <- configs_extra
+clusterExport(cl, "configs_rf")
+resultados_extra <- do.call(rbind, parLapply(cl, 2006:2012, correr_ventana))
+stopCluster(cl)
+configs_rf <- rbind(configs_rf_original, configs_extra)   # la grilla completa: 7 configuraciones
 
+# se suman a los resultados anteriores y se repite exactamente la misma elección
+resultados_extra$mejora_MAE  <- 1 - resultados_extra$MAE_rf  / resultados_extra$MAE_pers
+resultados_extra$mejora_RMSE <- 1 - resultados_extra$RMSE_rf / resultados_extra$RMSE_pers
+resultados_rf <- rbind(resultados_rf, resultados_extra)
 
+por_anio_rf <- aggregate(cbind(mejora_MAE, mejora_RMSE) ~ anio + config, data = resultados_rf, FUN = median)
+tabla_rf <- aggregate(cbind(mejora_MAE, mejora_RMSE) ~ config, data = por_anio_rf, FUN = mean)
+tabla_rf <- tabla_rf[order(-tabla_rf$mejora_MAE), ]
+tabla_rf[, 2:3] <- round(tabla_rf[, 2:3], 3)
+tabla_rf                                  # ahora con 7 configuraciones
 
+empatadas <- tabla_rf[tabla_rf$mejora_MAE >= tabla_rf$mejora_MAE[1] - 0.005, ]
+ganador_rf <- empatadas[which.max(empatadas$mejora_RMSE), ]
+cat("M3 ganador con la búsqueda ampliada:", ganador_rf$config, "| mejora MAE:", ganador_rf$mejora_MAE,
+    "| mejora RMSE:", ganador_rf$mejora_RMSE, "\n")
+
+# comparación año a año entre mtry 5 y mtry 8 (ambos con nodesize 5)
+comparacion_mtry <- merge(subset(por_anio_rf, config == "mtry5_nodo5"),
+                          subset(por_anio_rf, config == "mtry8_nodo5"),
+                          by = "anio", suffixes = c("_mtry5", "_mtry8"))
+round(comparacion_mtry[, c("anio", "mejora_MAE_mtry5", "mejora_MAE_mtry8",
+                           "mejora_RMSE_mtry5", "mejora_RMSE_mtry8")], 3)
+
+# el ganador, año por año (se recalcula por si cambió)
+resumen_rf <- subset(por_anio_rf, config == ganador_rf$config)[, c("anio", "mejora_MAE", "mejora_RMSE")]
+resumen_rf$rios_mejoran <- tapply(subset(resultados_rf, config == ganador_rf$config)$mejora_MAE > 0,
+                                  subset(resultados_rf, config == ganador_rf$config)$anio, sum)
+round(resumen_rf, 3)
