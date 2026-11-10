@@ -1,0 +1,4 @@
+"familia","config_7_ventanas","mejora_MAE_7","config_3_ventanas","mejora_MAE_3","elegido_7","elegido_3"
+"M1 ridge/lasso","ridge 0.001",0.136,"ridge 0.03",0.133,FALSE,FALSE
+"M2 GAM","C_k15",0.269,"C_k10",0.226,FALSE,FALSE
+"M3 Random Forest","mtry8_nodo5",0.361,"mtry8_nodo5",0.335,TRUE,TRUE

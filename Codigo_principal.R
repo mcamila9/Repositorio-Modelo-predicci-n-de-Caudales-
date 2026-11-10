@@ -1190,3 +1190,7 @@ resumen_rf <- subset(por_anio_rf, config == ganador_rf$config)[, c("anio", "mejo
 resumen_rf$rios_mejoran <- tapply(subset(resultados_rf, config == ganador_rf$config)$mejora_MAE > 0,
                                   subset(resultados_rf, config == ganador_rf$config)$anio, sum)
 round(resumen_rf, 3)
+
+
+# BLOQUES 11 A 16: comparación, prueba final, incertidumbre, diagnóstico y sensibilidades
+source("bloques_11_16.R")

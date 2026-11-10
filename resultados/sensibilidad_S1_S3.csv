@@ -1,0 +1,4 @@
+"variante","mejora_MAE","mejora_RMSE","peor_anio_MAE"
+"M3 ganador (cambio log, código de cuenca)",0.361,0.309,0.285
+"S1: respuesta en m3/s",0.247,0.232,0.143
+"S3: atributos físicos en vez de cuenca",0.356,0.294,0.297

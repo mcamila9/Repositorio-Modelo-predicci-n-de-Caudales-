@@ -1,0 +1,6 @@
+"modelo","mejora_MAE","mejora_RMSE","peor_anio_MAE","rios_que_mejoran","dias_evaluados"
+"M3 Random Forest",0.361,0.309,0.285,197,75609
+"M2 GAM",0.27,0.261,0.199,180,75609
+"M1 ridge/lasso",0.141,0.124,0.084,177,75609
+"Persistencia",0,0,0,0,75609
+"Estacional",-2.763,-1.236,-4.396,0,75609
