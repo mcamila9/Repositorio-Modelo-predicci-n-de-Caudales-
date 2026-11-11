@@ -960,7 +960,7 @@ library(parallel)
 # ============================================================
 # Usamos min(nucleos - 1, 7) para usar como máximo 7 núcleos
 # uno por cada ventana y no sobrecargar
-n_cores <- min(detectCores() - 1, 7)
+n_cores <- min(detectCores() - 1, 2)
 
 cat("\n>>> Iniciando Random Forest con", n_cores, "núcleos en paralelo...\n")
 cat(">>> Tiempo estimado: ~10 min en total (6 configuraciones x 7 ventanas).\n")
